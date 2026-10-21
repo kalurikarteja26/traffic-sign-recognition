@@ -1,0 +1,2 @@
+Model Name,Parameters,Resolution,Test Accuracy (%),Macro Precision (%),Macro Recall (%),Macro F1-Score (%),Weighted F1-Score (%),Latency (ms/img),Architecture
+BASELINE,1212235,32x32,81.2,81.32,84.33,80.78,81.61,21.58,Baseline CNN

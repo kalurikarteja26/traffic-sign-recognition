@@ -1,0 +1,44 @@
+ClassId,SignName,Samples,Accuracy (%),Precision (%),Recall (%),F1-Score (%)
+0,Speed limit (20km/h),60,100.0,14.35,100.0,25.1
+1,Speed limit (30km/h),720,35.69,83.99,35.69,50.1
+2,Speed limit (50km/h),750,48.0,62.28,48.0,54.22
+3,Speed limit (60km/h),450,96.44,55.29,96.44,70.28
+4,Speed limit (70km/h),660,75.61,93.97,75.61,83.8
+5,Speed limit (80km/h),630,55.56,52.01,55.56,53.72
+6,End of speed limit (80km/h),150,76.0,94.21,76.0,84.13
+7,Speed limit (100km/h),450,41.56,79.91,41.56,54.68
+8,Speed limit (120km/h),450,78.22,55.17,78.22,64.71
+9,No passing,480,97.5,96.89,97.5,97.2
+10,No passing for vehicles over 3.5 metric tons,660,97.73,97.73,97.73,97.73
+11,Right-of-way at the next intersection,420,86.9,98.38,86.9,92.29
+12,Priority road,690,91.3,99.53,91.3,95.24
+13,Yield,720,99.58,96.76,99.58,98.15
+14,Stop,270,96.3,100.0,96.3,98.11
+15,No vehicles,210,99.05,96.74,99.05,97.88
+16,Vehicles over 3.5 metric tons prohibited,150,94.0,95.92,94.0,94.95
+17,No entry,360,99.72,100.0,99.72,99.86
+18,General caution,390,70.0,99.27,70.0,82.11
+19,Dangerous curve to the left,60,56.67,69.39,56.67,62.39
+20,Dangerous curve to the right,90,73.33,71.74,73.33,72.53
+21,Double curve,90,62.22,91.8,62.22,74.17
+22,Bumpy road,120,96.67,97.48,96.67,97.07
+23,Slippery road,150,92.0,69.35,92.0,79.08
+24,Road narrows on the right,90,82.22,54.01,82.22,65.2
+25,Road work,480,95.0,96.61,95.0,95.8
+26,Traffic signals,180,99.44,90.4,99.44,94.71
+27,Pedestrians,60,46.67,41.18,46.67,43.75
+28,Children crossing,150,78.67,67.05,78.67,72.39
+29,Bicycles crossing,90,100.0,53.25,100.0,69.5
+30,Beware of ice/snow,150,66.0,56.25,66.0,60.74
+31,Wild animals crossing,270,91.11,94.98,91.11,93.01
+32,End of all speed and passing limits,60,100.0,58.25,100.0,73.62
+33,Turn right ahead,210,99.52,92.48,99.52,95.87
+34,Turn left ahead,120,100.0,93.75,100.0,96.77
+35,Ahead only,390,90.77,100.0,90.77,95.16
+36,Go straight or right,120,99.17,72.12,99.17,83.51
+37,Go straight or left,60,100.0,96.77,100.0,98.36
+38,Keep right,690,94.64,100.0,94.64,97.24
+39,Keep left,90,98.89,98.89,98.89,98.89
+40,Roundabout mandatory,90,90.0,98.78,90.0,94.19
+41,End of no passing,60,81.67,62.03,81.67,70.5
+42,End of no passing by vehicles over 3.5 metric tons,90,92.22,97.65,92.22,94.86

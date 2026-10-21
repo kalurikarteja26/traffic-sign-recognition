@@ -1,0 +1,42 @@
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Frontend & Node
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+node_modules/
+dist/
+
+# Local databases, uploads, & scratch
+*.db
+*.sqlite
+*.sqlite3
+aerovision.db
+uploads/
+scratch/
+.env
+
+# Datasets (Large image collections - use download_dataset.py)
+dataset/
+training data/
+training data/DATA/
+training data/TEST/
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

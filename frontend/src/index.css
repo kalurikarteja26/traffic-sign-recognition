@@ -1,0 +1,368 @@
+:root {
+  --bg-base: #070B14;
+  --bg-surface: #0c1321;
+  --surface-low: #151b2a;
+  --surface-container: #19202e;
+  --surface-high: #232a39;
+  --surface-highest: #2e3544;
+  --surface-bright: #323949;
+  --surface-lowest: #070e1c;
+  
+  --primary: #3B82F6;
+  --primary-container: #4d8eff;
+  --primary-fixed-dim: #adc6ff;
+  --electric-cyan: #22D3EE;
+  
+  --signal-emerald: #10B981;
+  --signal-amber: #F59E0B;
+  --signal-crimson: #EF4444;
+  --telemetry-muted: #94A3B8;
+  
+  --glass-surface: rgba(16, 32, 59, 0.65);
+  --glass-elevated: rgba(22, 43, 77, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-border-focus: rgba(34, 211, 238, 0.4);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-base);
+  color: #dce2f6;
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Typography tokens matching Stitch */
+.font-display-lg {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.font-headline-xl {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.font-headline-lg {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.font-headline-md {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 500;
+}
+
+.font-body-lg {
+  font-family: 'Inter', sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.font-body-md {
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.font-body-sm {
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.font-telemetry-lg {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.font-telemetry-md {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.font-telemetry-sm {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+
+/* Stitch Glassmorphism Panels */
+.stitch-glass {
+  background: var(--glass-surface);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+.stitch-glass-elevated {
+  background: var(--glass-elevated);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1px solid var(--glass-border-focus);
+  box-shadow: 0 16px 48px 0 rgba(0, 0, 0, 0.65), 0 0 24px rgba(59, 130, 246, 0.15);
+}
+
+.stitch-card {
+  background: rgba(25, 32, 46, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+}
+
+/* Titanium Cockpit Panels & Cards */
+.titanium-panel {
+  background-color: #0d1527 !important;
+  background: rgba(13, 21, 39, 0.98) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.85), 0 0 24px rgba(34, 211, 238, 0.06);
+  border-radius: 12px;
+}
+
+.titanium-card {
+  background-color: #111a2e;
+  background: rgba(17, 26, 46, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+}
+
+.input-titanium {
+  width: 100%;
+  background: rgba(7, 14, 28, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  color: #ffffff;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.input-titanium:focus {
+  border-color: #22D3EE;
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.25), inset 0 2px 4px rgba(0, 0, 0, 0.4);
+  background: rgba(10, 20, 42, 0.98);
+}
+
+.input-titanium::placeholder {
+  color: #64748b;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #2563EB 0%, #06B6D4 100%);
+  color: #ffffff;
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  border: none;
+  border-radius: 12px;
+  padding: 0.75rem 1.25rem;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(37, 99, 235, 0.35), 0 0 16px rgba(6, 182, 212, 0.2);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-primary:hover {
+  filter: brightness(1.12);
+  box-shadow: 0 6px 28px rgba(6, 182, 212, 0.5), 0 0 24px rgba(37, 99, 235, 0.4);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: scale(0.98);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.stitch-input {
+  background: rgba(7, 14, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #dce2f6;
+  transition: all 0.2s ease;
+}
+
+.stitch-input:focus {
+  outline: none;
+  border-color: var(--electric-cyan);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.25);
+}
+
+.btn-stitch-primary {
+  background: var(--primary);
+  color: #ffffff;
+  border: none;
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.4);
+  transition: all 0.2s ease;
+}
+
+.btn-stitch-primary:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 24px rgba(59, 130, 246, 0.6);
+  transform: translateY(-1px);
+}
+
+.btn-stitch-primary:active {
+  transform: scale(0.98);
+}
+
+/* Background Animated Road Grid & Cyber Horizon */
+.cyber-road-grid {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(to right, rgba(59, 130, 246, 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(59, 130, 246, 0.07) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 70%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 70%, transparent 100%);
+  animation: road-grid-move 20s linear infinite;
+}
+
+@keyframes road-grid-move {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 60px;
+  }
+}
+
+/* Animated Ambient Atmospheric Glow Orbs */
+.ambient-orb-1 {
+  animation: orb-float-1 18s ease-in-out infinite alternate;
+}
+
+.ambient-orb-2 {
+  animation: orb-float-2 22s ease-in-out infinite alternate;
+}
+
+.ambient-orb-3 {
+  animation: orb-float-3 25s ease-in-out infinite alternate;
+}
+
+@keyframes orb-float-1 {
+  0% {
+    transform: translate(0px, 0px) scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translate(60px, 40px) scale(1.15);
+    opacity: 0.65;
+  }
+  100% {
+    transform: translate(-40px, 70px) scale(0.95);
+    opacity: 0.4;
+  }
+}
+
+@keyframes orb-float-2 {
+  0% {
+    transform: translate(0px, 0px) scale(1);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translate(-70px, -50px) scale(1.2);
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate(50px, -30px) scale(0.9);
+    opacity: 0.3;
+  }
+}
+
+@keyframes orb-float-3 {
+  0% {
+    transform: translate(0px, 0px) scale(0.9);
+    opacity: 0.25;
+  }
+  50% {
+    transform: translate(80px, -60px) scale(1.1);
+    opacity: 0.45;
+  }
+  100% {
+    transform: translate(-50px, 40px) scale(1);
+    opacity: 0.3;
+  }
+}
+
+/* Radar Pulse / Telemetry Ring */
+@keyframes radar-sweep {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.radar-spinner {
+  animation: radar-sweep 12s linear infinite;
+}
+
+/* Material symbols utility */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.material-symbols-outlined.fill-1 {
+  font-variation-settings: 'FILL' 1;
+}
+
+/* Pulse beacon */
+.pulse-emerald {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--signal-emerald);
+  box-shadow: 0 0 10px var(--signal-emerald);
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+/* Hide webkit scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(7, 11, 20, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.4);
+}
