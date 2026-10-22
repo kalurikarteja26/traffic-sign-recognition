@@ -146,4 +146,30 @@ export const api = {
   getAdminUsers: () => request('/admin/users'),
   getAdminAuditLogs: () => request('/admin/audit-logs'),
   getAdminSystemHealth: () => request('/admin/system-health'),
+
+  // Location-Aware Navigation & Traffic Sign Voice Alerts
+  getCorridors: () => request('/navigation/corridors'),
+  getNavigationSigns: (params?: { corridor_id?: string; category?: string; verification_status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.corridor_id) q.append('corridor_id', params.corridor_id);
+    if (params?.category) q.append('category', params.category);
+    if (params?.verification_status) q.append('verification_status', params.verification_status);
+    return request(`/navigation/signs?${q.toString()}`);
+  },
+  getSignDetails: (id: number) => request(`/navigation/signs/${id}`),
+  createSign: (data: any) => request('/navigation/signs', { method: 'POST', body: JSON.stringify(data) }),
+  verifySign: (id: number, status: string = 'VERIFIED') => request(`/navigation/signs/${id}/verify?verified_status=${status}`, { method: 'PUT' }),
+  submitSignReport: (data: any) => request('/navigation/reports', { method: 'POST', body: JSON.stringify(data) }),
+  getSignReports: () => request('/navigation/reports'),
+  matchRoute: (data: any) => request('/navigation/match-route', { method: 'POST', body: JSON.stringify(data) }),
+  quickPinTestSign: (params: { lat: number; lon: number; heading_deg?: number; sign_type?: string; distance_ahead_m?: number }) => {
+    const q = new URLSearchParams({
+      lat: String(params.lat),
+      lon: String(params.lon),
+      heading_deg: String(params.heading_deg ?? 0),
+      sign_type: params.sign_type || 'Stop Sign',
+      distance_ahead_m: String(params.distance_ahead_m || 180),
+    });
+    return request(`/navigation/quick-pin-test-sign?${q.toString()}`, { method: 'POST' });
+  },
 };

@@ -18,6 +18,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'vehicles', label: 'My Vehicles', icon: 'directions_car', authRequired: true },
     { id: 'challans', label: 'Challan Centre', icon: 'receipt_long', authRequired: true },
     { id: 'academy', label: 'Traffic Rules Academy', icon: 'school', authRequired: false },
+    { id: 'nav-alerts', label: 'Nav & Voice Alerts', icon: 'navigation', authRequired: false },
     { id: 'vault', label: 'Dashcam Vault', icon: 'videocam', authRequired: true },
     { id: 'ai-studio', label: 'AI Road Intelligence', icon: 'smart_toy', authRequired: false },
   ];

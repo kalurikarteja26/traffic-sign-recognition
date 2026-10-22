@@ -9,7 +9,7 @@ from backend.database import Base, engine
 from backend.seed_data import seed_database
 from backend.routers import (
     auth, vehicles, challans, rules,
-    vault, ai, dashboard, admin
+    vault, ai, dashboard, admin, navigation
 )
 
 # Initialize database schema & seed initial RTO rules on boot
@@ -42,6 +42,7 @@ app.include_router(vault.router, prefix=settings.API_V1_PREFIX)
 app.include_router(ai.router, prefix=settings.API_V1_PREFIX)
 app.include_router(dashboard.router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
+app.include_router(navigation.router, prefix=settings.API_V1_PREFIX)
 
 # Static file serving for snapshots and test sign images
 app.mount("/static/snapshots", StaticFiles(directory=str(SNAPSHOTS_DIR)), name="snapshots")

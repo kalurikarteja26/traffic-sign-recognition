@@ -200,3 +200,75 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+
+class VerifiedTrafficSign(Base):
+    __tablename__ = "verified_traffic_signs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sign_code = Column(String(50), nullable=True, index=True)  # e.g. 'IRC67-M01'
+    rule_class_id = Column(Integer, nullable=True, index=True) # Linked to 108 RTO classes
+    sign_name = Column(String(200), nullable=False, index=True)
+    category = Column(String(100), default="Mandatory", index=True) # 'Mandatory', 'Cautionary', 'Informational'
+    sign_type = Column(String(100), nullable=False) # e.g. 'Speed Limit', 'Stop Sign', 'School Zone'
+    
+    # Precise Geospatial Attributes
+    latitude = Column(Float, nullable=False, index=True)
+    longitude = Column(Float, nullable=False, index=True)
+    altitude_m = Column(Float, nullable=True)
+    road_name = Column(String(200), nullable=False, index=True)
+    road_segment = Column(String(200), nullable=True) # e.g. 'Outer Ring Road Km 14-16'
+    direction_deg = Column(Float, nullable=True) # 0-360 degrees heading where sign is facing traffic
+    direction_cardinal = Column(String(50), nullable=True) # e.g. 'Northbound', 'Eastbound'
+    corridor_id = Column(String(100), nullable=True, index=True) # e.g. 'HYD-ORR-01', 'BLR-ECITY-02'
+
+    # Legal Restriction & Regulatory Rules
+    speed_limit = Column(Integer, nullable=True) # e.g. 40, 50, 80 km/h
+    restriction_details = Column(Text, nullable=True)
+    validity_conditions = Column(Text, nullable=True) # e.g. 'All days 24x7' or 'Mon-Fri 08:00-16:00'
+    legal_reference = Column(String(255), default="Motor Vehicles Act, 1988 — Section 119")
+    penalty_info = Column(String(255), nullable=True)
+    
+    # Audio Alert & TTS Prompts
+    tts_prompt_en = Column(Text, nullable=False)
+    tts_prompt_te = Column(Text, nullable=True)
+    tts_prompt_hi = Column(Text, nullable=True)
+    advance_warning_meters = Column(Integer, default=200) # Recommended trigger point
+
+    # Verification & Trust Metadata
+    verification_status = Column(String(50), default="VERIFIED", index=True) # 'VERIFIED', 'UNVERIFIED_REPORT', 'EXPERIMENTAL_DETECTION'
+    source = Column(String(150), default="NHAI / Official State Authority")
+    is_active = Column(Boolean, default=True, index=True)
+    verified_at = Column(DateTime, default=datetime.datetime.utcnow)
+    image_url = Column(String(500), nullable=True)
+    metadata_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    # Relationships
+    reports = relationship("SignReport", back_populates="sign", cascade="all, delete-orphan")
+
+
+class SignReport(Base):
+    __tablename__ = "sign_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    sign_id = Column(Integer, ForeignKey("verified_traffic_signs.id"), nullable=True, index=True)
+    report_type = Column(String(50), nullable=False) # 'MISSING_SIGN', 'INCORRECT_SIGN', 'DAMAGED_SIGN', 'OBSOLETE_SIGN'
+    sign_name = Column(String(200), nullable=True)
+    category = Column(String(100), default="Mandatory")
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    road_name = Column(String(200), nullable=False)
+    direction_deg = Column(Float, nullable=True)
+    suggested_speed_limit = Column(Integer, nullable=True)
+    description = Column(Text, nullable=False)
+    status = Column(String(50), default="PENDING", index=True) # 'PENDING', 'APPROVED', 'REJECTED'
+    reviewer_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id])
+    sign = relationship("VerifiedTrafficSign", back_populates="reports")
+

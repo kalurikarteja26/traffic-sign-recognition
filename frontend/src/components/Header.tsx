@@ -38,6 +38,9 @@ export const Header: React.FC<HeaderProps> = ({
         return 'Dashcam Evidence Vault';
       case 'ai-studio':
         return 'AI Road Intelligence & HUD Stream';
+      case 'nav-alerts':
+      case 'navigation':
+        return 'Live Navigation & Voice Alert Avionics';
       case 'admin':
         return 'Admin Operations';
       case 'profile':

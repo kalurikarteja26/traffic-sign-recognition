@@ -658,6 +658,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, user: 
 
         {/* RIGHT COLUMN: 4 Columns In-Cab Assistant & Compliance Sidecar */}
         <div className="xl:col-span-4 flex flex-col gap-6">
+          {/* Featured ADAS Card: Live Navigation & Voice Alert Cockpit */}
+          <div
+            onClick={() => onNavigate('nav-alerts')}
+            className="rounded-xl bg-gradient-to-br from-[#10203B]/90 via-[#071328]/95 to-[#0b1c38]/90 border border-cyan-500/30 p-6 shadow-2xl flex flex-col gap-4 relative overflow-hidden cursor-pointer group hover:border-cyan-400/50 transition-all"
+          >
+            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none group-hover:scale-125 transition-transform"></div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-cyan-400 text-xl">navigation</span>
+                <h3 className="font-heading font-bold text-base text-white">Live Nav & Voice Alerts</h3>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-mono text-[10px] font-semibold border border-cyan-500/40 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                ACTIVE ADAS
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Location-aware corridor navigation with advance voice warnings (500m/200m/100m) for verified Indian RTO signs & speed limits.
+            </p>
+
+            <div className="flex items-center justify-between pt-2 border-t border-white/10 font-mono text-xs">
+              <span className="text-slate-400">Google Maps Platform</span>
+              <span className="text-cyan-400 group-hover:translate-x-1 transition-transform flex items-center gap-1 font-semibold">
+                Launch Cockpit →
+              </span>
+            </div>
+          </div>
+
           {/* 1. Traffic-Rule Learning Progress Card (Gamified Radial Meter) */}
           <div className="rounded-xl bg-[#10203B]/70 border border-white/10 backdrop-blur-xl p-6 shadow-2xl flex flex-col gap-4 relative overflow-hidden">
             <div className="flex items-center justify-between">

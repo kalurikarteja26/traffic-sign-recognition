@@ -41,6 +41,14 @@ AeroVision transforms single-purpose traffic sign detection into an enterprise-g
    - Role-Based Access Control (RBAC) protecting administrative operations.
    - User account directory, system health diagnostics (DB, AI model, storage volumes), and audit logging.
 
+7. **Intelligent Location-Aware Navigation & Voice Alerts (Google Maps Platform)**:
+   - **Google Maps Navigation**: Live route tracking with dark titanium cockpit theme, route polyline, vehicle orientation, and verified sign markers (with built-in precision vector map fallback).
+   - **Advance Voice Alert Engine**: Multi-threshold advance warnings (**500m**, **200m**, **100m**) adapted to vehicle speed and road classification.
+   - **Corridor & Heading Filtering**: Rejects signs on parallel roads (cross-track corridor tolerance) and opposite carriageways (180° heading mismatch rejection).
+   - **Multi-Language Speech Synthesis**: Native voice alerts in English, Telugu (తెలుగు), and Hindi (हिंदी) with priority queueing and visual fallback.
+   - **Crowdsourced Sign Reporting**: Driver submission workflow with administrative verification lifecycle (`VERIFIED`, `UNVERIFIED_REPORT`).
+   - **Precision Driving Simulator**: Realistic desktop testing mode supporting 20, 40, 60, and 80 km/h playback, forward jumps, and pause/resume.
+
 ---
 
 ## 🏗️ System Architecture
@@ -120,10 +128,12 @@ Interactive API Docs: `http://localhost:8000/docs`
 
 Run the full integration test suite with `pytest`:
 ```powershell
-.\.venv\Scripts\pytest.exe test_aerovision_platform.py -v
+.\.venv\Scripts\pytest.exe test_aerovision_platform.py test_navigation_alerts.py -v
 ```
 
-### Verified Test Results (12/12 Passed):
+### Verified Test Results (25/25 Passed):
+
+**Core Platform & Integration Tests (12/12 Passed):**
 - `test_root_endpoint`: Platform identity & status online.
 - `test_authentication_driver`: Driver login & JWT bearer token.
 - `test_authentication_admin`: Admin login & RBAC role.
@@ -136,6 +146,21 @@ Run the full integration test suite with `pytest`:
 - `test_dashcam_vault_quota`: 500 MB storage quota validation.
 - `test_ai_perception_model_evaluation`: 108-class PyTorch model verification, latency, and agent pipeline.
 - `test_admin_console_rbac`: 403 Forbidden enforcement for drivers attempting admin access.
+
+**Navigation & Location-Aware Alert Engine Tests (13/13 Passed):**
+- `test_geospatial_haversine_distance`: Spherical distance calculation between Indian GPS coordinates.
+- `test_geospatial_bearing`: Forward azimuth bearing calculation.
+- `test_bearing_difference_and_alignment`: Angular delta & heading alignment filter.
+- `test_cross_track_corridor_rejection_math`: Perpendicular road centerline offset projection.
+- `test_speed_adaptive_warning_thresholds`: High-speed highway expansion of warning distances.
+- `test_api_navigation_corridors`: Pre-mapped Indian highway corridors retrieval.
+- `test_api_navigation_signs`: Verified sign retrieval with statutory penalties and multilingual TTS.
+- `test_route_matching_primary_warning_200m`: Primary advance alert generation (<= 200m).
+- `test_opposite_direction_sign_rejection`: Rejection of signs facing opposite oncoming traffic (180° heading mismatch).
+- `test_parallel_road_sign_rejection`: Rejection of signs on adjacent parallel service streets (> 35m cross-track).
+- `test_off_route_vehicle_detection`: Off-route vehicle drift detection (> 55m).
+- `test_unverified_sign_reporting_and_uncertainty`: Crowdsourced driver sign reporting and uncertainty flag enforcement.
+- `test_admin_sign_verification`: Role-based sign verification lifecycle.
 
 ---
 

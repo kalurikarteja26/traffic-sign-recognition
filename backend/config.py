@@ -31,5 +31,6 @@ class Settings(BaseModel):
         "*"
     ]
     MODEL_CHECKPOINT_PATH: str = str(BASE_DIR / "models" / "rto_best.pth")
+    GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
 settings = Settings()

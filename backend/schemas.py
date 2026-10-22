@@ -242,3 +242,99 @@ class DashboardSummary(BaseModel):
     quiz_average_score: float
     recent_events: List[SafetyEventResponse]
     unread_notifications_count: int
+
+
+# ── Navigation & Location-Aware Verified Sign Schemas ─────────────────────────
+class VerifiedTrafficSignBase(BaseModel):
+    sign_code: Optional[str] = None
+    rule_class_id: Optional[int] = None
+    sign_name: str
+    category: str = "Mandatory"
+    sign_type: str
+    latitude: float
+    longitude: float
+    altitude_m: Optional[float] = None
+    road_name: str
+    road_segment: Optional[str] = None
+    direction_deg: Optional[float] = None
+    direction_cardinal: Optional[str] = None
+    corridor_id: Optional[str] = None
+    speed_limit: Optional[int] = None
+    restriction_details: Optional[str] = None
+    validity_conditions: Optional[str] = None
+    legal_reference: Optional[str] = "Motor Vehicles Act, 1988 — Section 119"
+    penalty_info: Optional[str] = None
+    tts_prompt_en: str
+    tts_prompt_te: Optional[str] = None
+    tts_prompt_hi: Optional[str] = None
+    advance_warning_meters: int = 200
+    verification_status: str = "VERIFIED"
+    source: str = "NHAI / Official State Authority"
+    is_active: bool = True
+    image_url: Optional[str] = None
+    metadata_json: Optional[str] = "{}"
+
+class VerifiedTrafficSignCreate(VerifiedTrafficSignBase):
+    pass
+
+class VerifiedTrafficSignResponse(VerifiedTrafficSignBase):
+    id: int
+    verified_at: Optional[datetime.datetime] = None
+    created_at: datetime.datetime
+    updated_at: Optional[datetime.datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class SignReportCreate(BaseModel):
+    sign_id: Optional[int] = None
+    report_type: str = "MISSING_SIGN"  # 'MISSING_SIGN', 'INCORRECT_SIGN', 'DAMAGED_SIGN', 'OBSOLETE_SIGN'
+    sign_name: Optional[str] = None
+    category: str = "Mandatory"
+    latitude: float
+    longitude: float
+    road_name: str
+    direction_deg: Optional[float] = None
+    suggested_speed_limit: Optional[int] = None
+    description: str
+
+class SignReportResponse(SignReportCreate):
+    id: int
+    user_id: Optional[int] = None
+    status: str
+    reviewer_notes: Optional[str] = None
+    created_at: datetime.datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class RouteMatchRequest(BaseModel):
+    user_lat: float
+    user_lon: float
+    user_heading_deg: Optional[float] = None
+    user_speed_kmh: Optional[float] = 0.0
+    route_waypoints: Optional[List[List[float]]] = None  # [[lat, lon], ...]
+    corridor_tolerance_m: float = 35.0
+    heading_tolerance_deg: float = 65.0
+    lookahead_meters: float = 3000.0
+    warning_thresholds: Optional[List[int]] = None  # [500, 200, 100]
+
+class UpcomingSignAlert(BaseModel):
+    sign: VerifiedTrafficSignResponse
+    eligible: bool
+    distance_m: float
+    direct_distance_m: float
+    cross_track_m: float
+    bearing_diff_deg: float
+    eta_seconds: Optional[float] = None
+    alert_stage: str  # 'UPCOMING', 'EARLY_500M', 'PRIMARY_200M', 'IMMEDIATE_100M', 'PASSED'
+    speech_text: str
+    urgency: str  # 'CRITICAL', 'WARNING', 'INFORMATIONAL'
+    reason: str
+
+class RouteMatchResponse(BaseModel):
+    user_location: Dict[str, Any]
+    total_corridor_signs_count: int
+    upcoming_alerts: List[UpcomingSignAlert]
+    next_alert: Optional[UpcomingSignAlert] = None
+    route_status: str  # 'ON_ROUTE', 'OFF_ROUTE', 'STANDBY'
+    cross_track_distance_m: float
+

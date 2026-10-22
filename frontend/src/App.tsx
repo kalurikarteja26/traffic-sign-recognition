@@ -11,6 +11,7 @@ import { VaultView } from './pages/VaultView';
 import { AIStudioView } from './pages/AIStudioView';
 import { ProfileView } from './pages/ProfileView';
 import { AdminView } from './pages/AdminView';
+import { NavigationAlertsView } from './pages/NavigationAlertsView';
 import { api } from './api';
 import { Shield, Lock } from 'lucide-react';
 
@@ -26,6 +27,7 @@ const normalizeTab = (raw: string): string => {
   if (clean === 'dashboard') return 'overview';
   if (clean === 'garage') return 'vehicles';
   if (clean === 'rules') return 'academy';
+  if (clean === 'navigation' || clean === 'nav' || clean === 'map' || clean === 'alerts') return 'nav-alerts';
 
   const validTabs = [
     'overview',
@@ -34,6 +36,7 @@ const normalizeTab = (raw: string): string => {
     'academy',
     'vault',
     'ai-studio',
+    'nav-alerts',
     'admin',
     'profile',
     'landing',
@@ -206,6 +209,7 @@ export const App: React.FC = () => {
                   { id: 'vehicles', label: 'My Vehicles', icon: 'directions_car' },
                   { id: 'challans', label: 'Challan Centre', icon: 'receipt_long' },
                   { id: 'academy', label: 'Traffic Rules Academy', icon: 'school' },
+                  { id: 'nav-alerts', label: 'Nav & Voice Alerts', icon: 'navigation' },
                   { id: 'vault', label: 'Dashcam Vault', icon: 'videocam' },
                   { id: 'ai-studio', label: 'AI Road Intelligence', icon: 'smart_toy' },
                 ].map((item) => (
@@ -320,6 +324,8 @@ export const App: React.FC = () => {
               {currentTab === 'vault' && <VaultView />}
 
               {currentTab === 'ai-studio' && <AIStudioView />}
+
+              {currentTab === 'nav-alerts' && <NavigationAlertsView />}
 
               {currentTab === 'profile' && (
                 <ProfileView

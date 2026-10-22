@@ -1,12 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../api';
 import { ALL_108_RTO_SIGNS } from '../data/rtoSignsData';
+import { speechService, type AlertLanguage } from '../services/speechService';
 
 export const AIStudioView: React.FC = () => {
   const [modelStatus, setModelStatus] = useState<any>(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [activeMode, setActiveMode] = useState<'stream' | 'webcam' | 'upload'>('stream');
   
+  // Voice Alert Avionics for Webcam & Optical Perception
+  const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(true);
+  const [webcamLang, setWebcamLang] = useState<AlertLanguage>('en');
+  const [lastVoiceSpoken, setLastVoiceSpoken] = useState<{
+    text: string;
+    signName: string;
+    timestamp: number;
+    lang: AlertLanguage;
+  } | null>(null);
+  const lastSpokenWebcamSignRef = useRef<{ signId: number; timestamp: number }>({ signId: -1, timestamp: 0 });
+
   // Real detection state from webcam / upload
   const [livePrediction, setLivePrediction] = useState<any | null>({
     sign_name: 'Stop Sign',
@@ -308,6 +320,68 @@ export const AIStudioView: React.FC = () => {
     setWebcamActive(false);
   };
 
+  // Intelligent Voice Alert Engine for Webcam Detections
+  const speakWebcamDetection = (signMeta: any, force = false) => {
+    if (!signMeta || signMeta.raw_class_id < 0) return;
+    if (!voiceAlertsEnabled && !force) return;
+
+    const now = Date.now();
+    const isDifferentSign = signMeta.raw_class_id !== lastSpokenWebcamSignRef.current.signId;
+    const cooldownOver = now - lastSpokenWebcamSignRef.current.timestamp > 4200;
+
+    if (!force && !isDifferentSign && !cooldownOver) {
+      return;
+    }
+
+    let promptText = '';
+    const name = signMeta.sign_name || 'Traffic Sign';
+
+    if (webcamLang === 'te') {
+      if (signMeta.raw_class_id === 0 || signMeta.halt) {
+        promptText = 'హెచ్చరిక: ఆగు సంకేతం గుర్తించబడింది. వాహనాన్ని పూర్తిగా నిలపండి.';
+      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
+        promptText = `హెచ్చరిక: ${name} గుర్తించబడింది. వేగ పరిమితి పాటించండి.`;
+      } else if (signMeta.category === 'MANDATORY') {
+        promptText = `తప్పనిసరి సంకేతం: ${name}. నిబంధనలను పాటించండి.`;
+      } else {
+        promptText = `హెచ్చరిక: ${name} గుర్తించబడింది. జాగ్రత్తగా నడపండి.`;
+      }
+    } else if (webcamLang === 'hi') {
+      if (signMeta.raw_class_id === 0 || signMeta.halt) {
+        promptText = 'चेतावनी: स्टॉप साइन पहचाना गया। वाहन को पूरी तरह रोकें।';
+      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
+        promptText = `चेतावनी: ${name} पहचाना गया। गति सीमा का पालन करें।`;
+      } else if (signMeta.category === 'MANDATORY') {
+        promptText = `अनिवार्य संकेत: ${name}। नियमों का पालन करें।`;
+      } else {
+        promptText = `चेतावनी: ${name} पहचाना गया। सावधानी से वाहन चलाएं।`;
+      }
+    } else {
+      if (signMeta.raw_class_id === 0 || signMeta.halt) {
+        promptText = 'Warning: Stop Sign detected. Mandatory full stop before stop line.';
+      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
+        promptText = `Warning: ${name} detected. Observe posted speed limit.`;
+      } else if (signMeta.category === 'MANDATORY') {
+        promptText = `Mandatory notice: ${name}. Compliance required.`;
+      } else if (signMeta.category === 'CAUTIONARY') {
+        promptText = `Caution: ${name} ahead. Proceed with caution.`;
+      } else {
+        promptText = `Notice: ${name} detected.`;
+      }
+    }
+
+    const urgency = (signMeta.category === 'MANDATORY' || signMeta.halt) ? 'CRITICAL' : 'WARNING';
+    speechService.speak(promptText, urgency, webcamLang);
+
+    lastSpokenWebcamSignRef.current = { signId: signMeta.raw_class_id, timestamp: now };
+    setLastVoiceSpoken({
+      text: promptText,
+      signName: name,
+      timestamp: now,
+      lang: webcamLang,
+    });
+  };
+
   // Resilient non-blocking webcam inference loop for real-time PyTorch model
   const runLiveFrameInference = async () => {
     if (!webcamActiveRef.current) return;
@@ -355,6 +429,9 @@ export const AIStudioView: React.FC = () => {
         const parsed = parsePredictionResult(res);
         if (parsed && webcamActiveRef.current) {
           setLivePrediction(parsed);
+          if (parsed.is_confirmed && parsed.raw_class_id >= 0) {
+            speakWebcamDetection(parsed);
+          }
         }
       }
     } catch (err) {
@@ -396,6 +473,9 @@ export const AIStudioView: React.FC = () => {
       const parsed = parsePredictionResult(res);
       if (parsed) {
         setLivePrediction(parsed);
+        if (parsed.is_confirmed && parsed.raw_class_id >= 0) {
+          speakWebcamDetection(parsed, true);
+        }
       }
     } catch (err: any) {
       alert('Inference error: ' + err.message);
@@ -470,9 +550,9 @@ export const AIStudioView: React.FC = () => {
         </div>
       </div>
 
-      {/* Mode Selector Pill */}
-      <div className="flex items-center justify-between gap-3 bg-[#10203B]/70 border border-white/10 p-2 rounded-xl backdrop-blur-xl">
-        <div className="flex items-center gap-2">
+      {/* Mode Selector Pill & Voice Alert Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#10203B]/70 border border-white/10 p-2 rounded-xl backdrop-blur-xl">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
               stopWebcam();
@@ -547,9 +627,80 @@ export const AIStudioView: React.FC = () => {
           />
         </div>
 
-        <span className="font-mono text-xs text-slate-400 hidden sm:inline">
-          108 RTO Sign Classes Loaded in Local Neural Weight File
-        </span>
+        {/* Live PC Webcam Voice Alert Avionics Controls */}
+        <div className="flex items-center gap-2">
+          {/* Mute / Unmute Toggle */}
+          <button
+            onClick={() => {
+              const nextState = !voiceAlertsEnabled;
+              setVoiceAlertsEnabled(nextState);
+              if (!nextState) {
+                speechService.stop();
+              } else {
+                speechService.speak(
+                  webcamLang === 'te'
+                    ? 'వెబ్‌క్యామ్ వాయిస్ అలర్ట్‌లు ప్రారంభించబడ్డాయి.'
+                    : webcamLang === 'hi'
+                    ? 'वेबकैम वॉयस अलर्ट सक्रिय कर दिए गए हैं।'
+                    : 'Webcam optical voice alerts enabled.',
+                  'INFORMATIONAL',
+                  webcamLang
+                );
+              }
+            }}
+            className={`px-3 py-1.5 rounded-lg font-mono text-xs transition-all flex items-center gap-1.5 border ${
+              voiceAlertsEnabled
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
+                : 'bg-slate-800 text-slate-400 border-white/10'
+            }`}
+          >
+            <span className="material-symbols-outlined text-sm">
+              {voiceAlertsEnabled ? 'volume_up' : 'volume_off'}
+            </span>
+            <span>{voiceAlertsEnabled ? 'Voice Alerts Active' : 'Voice Muted'}</span>
+          </button>
+
+          {/* Language Selector */}
+          <div className="flex items-center bg-[#070e1c] p-0.5 rounded-lg border border-white/10 text-xs font-mono">
+            {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+              <button
+                key={lang}
+                onClick={() => setWebcamLang(lang)}
+                className={`px-2 py-1 rounded text-xs transition-all ${
+                  webcamLang === lang
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिंदी'}
+              </button>
+            ))}
+          </div>
+
+          {/* Test Voice Button */}
+          <button
+            onClick={() => {
+              if (livePrediction && livePrediction.raw_class_id >= 0) {
+                speakWebcamDetection(livePrediction, true);
+              } else {
+                speechService.speak(
+                  webcamLang === 'te'
+                    ? 'టెస్ట్: ఆగు సంకేతం గుర్తించబడింది.'
+                    : webcamLang === 'hi'
+                    ? 'परीक्षण: स्टॉप संकेत पहचाना गया।'
+                    : 'Test alert: Stop sign detected ahead.',
+                  'CRITICAL',
+                  webcamLang
+                );
+              }
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-cyan-300 border border-white/10 text-xs font-mono flex items-center gap-1 transition-all"
+            title="Trigger immediate voice output test"
+          >
+            <span className="material-symbols-outlined text-sm">graphic_eq</span>
+            <span className="hidden md:inline">Test Output</span>
+          </button>
+        </div>
       </div>
 
       {/* Main Workspace: Split Video Engine & Sidecar Verification */}
@@ -758,6 +909,39 @@ export const AIStudioView: React.FC = () => {
               }
             })()}
 
+            {/* LIVE VOICE ADVISORY BROADCAST HUD BANNER */}
+            {lastVoiceSpoken && (
+              <div className="absolute bottom-14 inset-x-3 z-30 bg-[#070e1c]/95 border border-cyan-400/50 backdrop-blur-xl p-3 rounded-xl shadow-[0_0_24px_rgba(34,211,238,0.35)] flex items-center justify-between animate-fadeIn transition-all">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 shrink-0">
+                    <span className="material-symbols-outlined text-xl animate-pulse">volume_up</span>
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] text-cyan-400 uppercase font-bold tracking-wider">
+                        PC WEBCAM VOICE ALERT • [{lastVoiceSpoken.lang.toUpperCase()}]
+                      </span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      <span className="font-mono text-[9px] text-slate-400 truncate max-w-[120px]">{lastVoiceSpoken.signName}</span>
+                    </div>
+                    <p className="font-body-sm text-xs text-white font-medium truncate sm:whitespace-normal">
+                      "{lastVoiceSpoken.text}"
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => speechService.speak(lastVoiceSpoken.text, 'CRITICAL', lastVoiceSpoken.lang)}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-mono text-cyan-300 transition-colors flex items-center gap-1.5 border border-cyan-400/30"
+                    title="Re-play Voice Announcement"
+                  >
+                    <span className="material-symbols-outlined text-sm">replay</span>
+                    <span className="hidden sm:inline">Repeat</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Bottom Player In-Viewport Controls Overlay */}
             <div className="absolute bottom-3 inset-x-3 bg-[#070e1c]/80 border border-white/10 backdrop-blur-xl px-4 py-2 rounded-xl flex items-center justify-between shadow-lg">
               <div className="flex items-center gap-3">
@@ -902,6 +1086,72 @@ export const AIStudioView: React.FC = () => {
                     )}
                   </div>
                 </div>
+              </div>
+
+              {/* Webcam Voice Alert Avionics Status Card */}
+              <div className="bg-[#070e1c] border border-cyan-500/30 rounded-xl p-3.5 space-y-2.5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-cyan-400 text-lg">record_voice_over</span>
+                    <span className="font-mono text-xs text-white font-bold uppercase tracking-wider">
+                      Webcam Voice Alert System
+                    </span>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold border ${
+                    voiceAlertsEnabled
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                      : 'bg-slate-700/40 text-slate-400 border-slate-600'
+                  }`}>
+                    {voiceAlertsEnabled ? 'VOICE ARMED' : 'MUTED'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <div className="flex items-center bg-[#10203B] p-0.5 rounded-lg border border-white/10 text-xs font-mono">
+                    {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+                      <button
+                        key={lang}
+                        onClick={() => setWebcamLang(lang)}
+                        className={`px-2.5 py-1 rounded text-xs transition-all ${
+                          webcamLang === lang
+                            ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिंदी'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      if (livePrediction && livePrediction.raw_class_id >= 0) {
+                        speakWebcamDetection(livePrediction, true);
+                      } else {
+                        speechService.speak(
+                          webcamLang === 'te'
+                            ? 'వెబ్‌క్యామ్ వాయిస్ సిస్టమ్ సిద్ధంగా ఉంది.'
+                            : webcamLang === 'hi'
+                            ? 'वेबकैम वॉयस अलर्ट सिस्टम सक्रिय है।'
+                            : 'Webcam optical voice alert system is armed and operational.',
+                          'INFORMATIONAL',
+                          webcamLang
+                        );
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/40 text-xs font-mono flex items-center gap-1.5 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-sm">volume_up</span>
+                    <span>Test Voice</span>
+                  </button>
+                </div>
+
+                {lastVoiceSpoken && (
+                  <div className="bg-[#10203B]/60 border border-white/5 rounded-lg p-2 font-mono text-[11px] text-slate-300">
+                    <span className="text-[10px] text-cyan-400 font-bold block mb-0.5">LAST SPOKEN:</span>
+                    "{lastVoiceSpoken.text}"
+                  </div>
+                )}
               </div>
 
               {/* Confidence Meter Visual */}
