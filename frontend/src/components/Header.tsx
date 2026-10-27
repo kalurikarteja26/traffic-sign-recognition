@@ -52,20 +52,36 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="fixed top-0 left-0 lg:left-72 right-0 h-16 stitch-glass z-40 px-4 sm:px-6 lg:px-8 flex items-center justify-between border-b border-white/5">
-      {/* Left side: Mobile menu toggle + Breadcrumbs */}
-      <div className="flex items-center gap-3">
+      {/* Left side: Mobile menu toggle + Clickable Logo (Item 17) + Breadcrumbs */}
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <button
           onClick={onToggleMobileMenu}
-          className="lg:hidden p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
-          aria-label="Toggle Navigation"
+          className="lg:hidden p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 touch-target flex items-center justify-center shrink-0"
+          aria-label="Toggle Navigation Drawer"
         >
           <span className="material-symbols-outlined text-xl">menu</span>
         </button>
 
-        <div className="flex items-center gap-2 font-telemetry-sm text-xs text-[#94A3B8]">
+        {/* Clickable Logo in Mobile Header (Item 17) */}
+        <div
+          onClick={() => onNavigate('overview')}
+          className="lg:hidden flex items-center gap-1.5 cursor-pointer shrink-0 group"
+          title="Return to Cockpit Overview"
+        >
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600 to-cyan-500 p-0.5 flex items-center justify-center shadow-[0_0_8px_rgba(34,211,238,0.3)] group-hover:scale-105 transition-transform">
+            <div className="w-full h-full bg-[#070B14] rounded-[6px] flex items-center justify-center text-cyan-400">
+              <span className="material-symbols-outlined text-sm">shield</span>
+            </div>
+          </div>
+          <span className="font-heading font-black text-white text-xs sm:text-sm tracking-tight hidden sm:inline group-hover:text-cyan-400 transition-colors">
+            AeroVision
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1.5 font-telemetry-sm text-xs text-[#94A3B8] truncate min-w-0">
           <span className="hidden sm:inline">SYSTEM</span>
           <span className="material-symbols-outlined text-sm hidden sm:inline">chevron_right</span>
-          <span className="text-white font-medium tracking-wide">
+          <span className="text-white font-medium tracking-wide truncate">
             {getBreadcrumbName(currentTab)}
           </span>
         </div>
@@ -116,7 +132,7 @@ export const Header: React.FC<HeaderProps> = ({
                 className="fixed inset-0 z-40 cursor-default" 
                 onClick={() => setNotificationsOpen(false)} 
               />
-              <div className="absolute right-0 mt-2 w-80 bg-[#0d1527] border border-white/15 rounded-xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.85)] z-50 text-xs animate-in fade-in zoom-in-95 duration-150 backdrop-blur-2xl">
+              <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-[#0d1527] border border-white/15 rounded-xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.85)] z-50 text-xs animate-in fade-in zoom-in-95 duration-150 backdrop-blur-2xl">
                 <div className="flex items-center justify-between pb-2 mb-2 border-b border-white/10">
                   <span className="font-heading font-bold text-white">System Alerts</span>
                   <span className="font-telemetry-sm text-[10px] text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">3 NEW</span>
@@ -169,7 +185,7 @@ export const Header: React.FC<HeaderProps> = ({
                   className="fixed inset-0 z-40 cursor-default" 
                   onClick={() => setProfileDropdownOpen(false)} 
                 />
-                <div className="absolute right-0 mt-2 w-64 bg-[#0d1527] border border-white/15 rounded-xl p-2.5 shadow-[0_20px_50px_rgba(0,0,0,0.85)] z-50 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-2xl">
+                <div className="absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] bg-[#0d1527] border border-white/15 rounded-xl p-2.5 shadow-[0_20px_50px_rgba(0,0,0,0.85)] z-50 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-2xl">
                   {/* User Profile Header Card */}
                   <div className="px-3 py-2.5 bg-white/[0.04] rounded-lg border border-white/10 mb-2">
                     <div className="flex items-center gap-2.5">

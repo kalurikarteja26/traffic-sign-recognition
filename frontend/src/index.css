@@ -24,14 +24,37 @@
   --glass-border-focus: rgba(34, 211, 238, 0.4);
 }
 
-body {
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
   margin: 0;
   padding: 0;
   background-color: var(--bg-base);
   color: #dce2f6;
   font-family: 'Inter', sans-serif;
-  overflow-x: hidden;
+  overflow-x: hidden !important;
+  max-width: 100vw;
+  width: 100%;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  max-width: 100vw;
+  overflow-x: hidden;
+  width: 100%;
+  min-height: 100vh;
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 1rem);
+}
+
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
 }
 
 /* Typography tokens matching Stitch */

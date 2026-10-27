@@ -1,15 +1,24 @@
 // frontend/src/data/rtoSignsData.ts
 // Complete Official Catalog of all 108 Indian RTO & IRC:67 Traffic Signs with Statutory Penalties
+import {
+  CHANNELIZED_SIGNS_108,
+  getChannelizedAlert,
+  type ChannelizedSignItem,
+} from './channelizedSigns108';
 
 export interface RtoSignItem {
   id: number;
   class_id: number;
   sign_code: string;
   name: string;
+  name_te?: string;
+  name_hi?: string;
   category: 'MANDATORY' | 'CAUTIONARY' | 'INFORMATORY';
   shape: string;
   color_code: string;
   meaning: string;
+  meaning_te?: string;
+  meaning_hi?: string;
   legal_reference: string;
   penalty_info: string;
   image_url: string;
@@ -19,9 +28,71 @@ export interface RtoSignItem {
   pitfall: string;
   speed_limit?: number | null;
   tts_prompt: string;
+  tts_prompt_en?: string;
+  tts_prompt_te?: string;
+  tts_prompt_hi?: string;
+  urgency?: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL';
 }
 
-export const ALL_108_RTO_SIGNS: RtoSignItem[] = [
+/**
+ * Intelligent Multi-lingual Traffic Sign Voice Alert Formatter.
+ * Channelized directly across every single one of the 108 Indian RTO road signs (Class 0 through 107)
+ * with authentic, bespoke voice instructions in English, Telugu, and Hindi.
+ */
+export function buildTrafficSignVoicePrompt(
+  signMeta: any,
+  lang: 'en' | 'te' | 'hi' | 'all' = 'en'
+): string {
+  if (!signMeta) return 'Traffic sign detected.';
+
+  const targetLang = lang === 'all' ? 'en' : lang;
+  const cid = Number(signMeta.raw_class_id ?? signMeta.class_id ?? -1);
+
+  // 1. Direct class_id lookup in channelized 108 database (Class 0..107)
+  if (cid >= 0 && cid <= 107 && CHANNELIZED_SIGNS_108[cid]) {
+    const alertData = getChannelizedAlert(cid, targetLang);
+    if (alertData) return alertData.prompt;
+  }
+
+  // 2. Exact or fuzzy sign name lookup in channelized 108 database
+  const rawName = (signMeta.sign_name || signMeta.name || '').trim();
+  const lower = rawName.toLowerCase();
+
+  if (lower) {
+    for (let i = 0; i < 108; i++) {
+      const item = CHANNELIZED_SIGNS_108[i];
+      if (!item) continue;
+      const itemNameLower = item.name.toLowerCase();
+      if (
+        itemNameLower === lower ||
+        item.name_te === rawName ||
+        item.name_hi === rawName
+      ) {
+        return lang === 'te' ? item.alert_te : lang === 'hi' ? item.alert_hi : item.alert_en;
+      }
+    }
+
+    // Partial substring matching across all 108 signs
+    for (let i = 0; i < 108; i++) {
+      const item = CHANNELIZED_SIGNS_108[i];
+      if (!item) continue;
+      const itemNameLower = item.name.toLowerCase();
+      if (lower.includes(itemNameLower) || itemNameLower.includes(lower)) {
+        return lang === 'te' ? item.alert_te : lang === 'hi' ? item.alert_hi : item.alert_en;
+      }
+    }
+  }
+
+  // 3. Fallback localized notice
+  if (lang === 'te') {
+    return `హెచ్చరిక: ${rawName || 'ట్రాఫిక్ సంకేతం'} గుర్తించబడింది. నిబంధనలను పాటించండి.`;
+  } else if (lang === 'hi') {
+    return `चेतावनी: ${rawName || 'यातायात संकेत'} पहचाना गया। कृपया नियमों का पालन करें।`;
+  }
+  return `Notice: ${rawName || 'Traffic sign'} detected. Proceed with caution.`;
+}
+
+const RAW_108_RTO_SIGNS: RtoSignItem[] = [
   {
     "id": 0,
     "class_id": 0,
@@ -2075,3 +2146,19 @@ export const ALL_108_RTO_SIGNS: RtoSignItem[] = [
     "tts_prompt": "No Through Side Road. Side road to the right/left leads to a dead-end cul-de-sac with no thoroughfare. Statutory penalty: Dead End Advisory (No Violation Fine)."
   }
 ];
+
+export const ALL_108_RTO_SIGNS: RtoSignItem[] = RAW_108_RTO_SIGNS.map((sign) => {
+  const ch = CHANNELIZED_SIGNS_108[sign.class_id];
+  return {
+    ...sign,
+    name_te: ch?.name_te || sign.name,
+    name_hi: ch?.name_hi || sign.name,
+    tts_prompt_en: ch?.alert_en || sign.tts_prompt,
+    tts_prompt_te: ch?.alert_te || sign.tts_prompt,
+    tts_prompt_hi: ch?.alert_hi || sign.tts_prompt,
+    meaning_te: ch?.meaning_te || sign.meaning,
+    meaning_hi: ch?.meaning_hi || sign.meaning,
+    urgency: ch?.urgency || (sign.category === 'MANDATORY' ? 'CRITICAL' : 'WARNING'),
+  };
+});
+

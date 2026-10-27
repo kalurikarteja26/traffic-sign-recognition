@@ -37,6 +37,8 @@ import { speechService } from '../services/speechService';
 import type { AlertLanguage } from '../services/speechService';
 import { UpcomingAlertsPanel } from '../components/UpcomingAlertsPanel';
 import { api } from '../api';
+import { toast } from '../components/Toast';
+import { buildTrafficSignVoicePrompt } from '../data/rtoSignsData';
 
 export const NavigationAlertsView: React.FC = () => {
   const [navState, setNavState] = useState<NavigationState>(navigationService.getState());
@@ -103,7 +105,11 @@ export const NavigationAlertsView: React.FC = () => {
     const unsub = navigationService.subscribe((state) => {
       setNavState(state);
     });
-    return () => unsub();
+    return () => {
+      unsub();
+      // Gracefully pause background simulation when leaving navigation view
+      navigationService.pauseNavigation();
+    };
   }, []);
 
   // Fetch verified Indian Corridors from backend
@@ -291,7 +297,7 @@ export const NavigationAlertsView: React.FC = () => {
         setReportDescription('');
       }, 1800);
     } catch (err: any) {
-      alert(`Report failed: ${err.message}`);
+      toast.error(`Road sign report failed: ${err.message}`);
     } finally {
       setReportSubmitting(false);
     }
@@ -366,11 +372,20 @@ export const NavigationAlertsView: React.FC = () => {
                   setPipDetectedSign(pred);
                   const now = Date.now();
                   const cid = Number(pred.class_id);
-                  if (now - lastPipSpokenTimeRef.current > 4000 || lastPipSpokenRef.current !== cid) {
+                  const isSameSign = lastPipSpokenRef.current === cid;
+                  const timeSinceLastSpoken = now - lastPipSpokenTimeRef.current;
+
+                  // ADAS Rhythm & Cadence:
+                  // 1. Minimum 4.8s refractory between spoken detections
+                  // 2. Minimum 14s cooldown on repeating identical sign
+                  const canSpeak = (!isSameSign && timeSinceLastSpoken >= 4800) || (isSameSign && timeSinceLastSpoken >= 14000);
+
+                  if (canSpeak) {
                     lastPipSpokenRef.current = cid;
                     lastPipSpokenTimeRef.current = now;
-                    const prompt = `Camera detection: ${pred.sign_name}.`;
-                    speechService.speak(prompt, 'WARNING', speechService.getSettings().language);
+                    const lang = speechService.getSettings().language;
+                    const prompt = buildTrafficSignVoicePrompt(pred, lang);
+                    speechService.speak(prompt, 'WARNING', lang, 'CAMERA');
                   }
                 } else {
                   setPipDetectedSign(null);
@@ -404,9 +419,10 @@ export const NavigationAlertsView: React.FC = () => {
     try {
       await navigationService.quickPinSignAhead('Stop Sign', 180);
       setPinSuccessToast('Verified Stop Sign pinned 180m ahead of your device! Advance alert armed.');
+      toast.success('Verified Stop Sign pinned 180m ahead of your device! Advance alert armed.');
       setTimeout(() => setPinSuccessToast(null), 3500);
     } catch (e: any) {
-      alert(`Quick pin failed: ${e.message}`);
+      toast.error(`Quick pin failed: ${e.message}`);
     } finally {
       setPinningSign(false);
     }
@@ -468,7 +484,7 @@ export const NavigationAlertsView: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto">
+    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full max-w-full overflow-hidden">
       {/* ── Top Header Navigation Bar ────────────────────────────────────────── */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 rounded-2xl stitch-glass border border-white/10 shadow-xl">
         <div>

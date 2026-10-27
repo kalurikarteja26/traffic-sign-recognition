@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, AlertCircle } from 'lucide-react';
 import { api, setStoredToken } from '../api';
+import { toast } from './Toast';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -33,16 +34,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       if (isLogin) {
         const res = await api.login({ email, password });
         setStoredToken(res.access_token);
+        toast.success(`Welcome to the cockpit, ${res.user?.full_name || 'Pilot'}!`);
         onSuccess(res.user);
         onClose();
       } else {
         const res = await api.signup({ email, password, full_name: fullName, phone });
         setStoredToken(res.access_token);
+        toast.success('Pilot credentials and garage safety profile created!');
         onSuccess(res.user);
         onClose();
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed. Please verify credentials.');
+      const msg = err.message || 'Authentication failed. Please verify credentials.';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -167,7 +172,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@example.com"
+              placeholder="pilot@aerovision.in"
               className="input-titanium"
             />
           </div>

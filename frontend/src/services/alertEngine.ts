@@ -163,8 +163,8 @@ export class AlertEngine {
         this.announcedHistory.set(historyKey, Date.now());
         announcedThisTick = updatedItem;
 
-        // Dispatch to Speech Service
-        speechService.speak(speechText, updatedItem.urgency, currentLanguage);
+        // Dispatch to Speech Service with source tagging
+        speechService.speak(speechText, updatedItem.urgency, currentLanguage, 'NAVIGATION');
       }
     }
 

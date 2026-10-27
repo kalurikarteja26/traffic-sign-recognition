@@ -237,19 +237,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t border-white/10 py-8 text-center text-xs text-slate-400">
-        <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="font-heading font-bold text-white">AeroVision Platform</span>
-            <span>•</span>
-            <span>B.Tech CSM (AI & ML) Capstone Project</span>
-          </div>
-          <div className="font-telemetry text-[11px] text-slate-500">
-            Powered by PyTorch 2.14 • 108 Indian RTO Classes • FastAPI • React
+      {/* Quick Launch CTA Strip */}
+      <section className="max-w-4xl mx-auto px-4 pb-4">
+        <div className="titanium-panel p-8 text-center space-y-4 border-cyan-500/30">
+          <h3 className="font-heading font-black text-2xl text-white">
+            Ready to Connect Your Vehicle Cockpit?
+          </h3>
+          <p className="text-slate-300 text-xs sm:text-sm max-w-xl mx-auto">
+            Enrol your vehicle fleet, audit traffic citations, and stream real-time neural vision HUD directly in your browser.
+          </p>
+          <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+            <button
+              onClick={onOpenAuth}
+              className="btn-primary text-xs sm:text-sm px-6 py-2.5 shadow-lg shadow-blue-600/30"
+            >
+              <span>Get Started Free</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onExploreRules}
+              className="btn-secondary text-xs sm:text-sm px-5 py-2.5"
+            >
+              <span>View 108 RTO Signs</span>
+            </button>
           </div>
         </div>
-      </footer>
+      </section>
     </div>
   );
 };

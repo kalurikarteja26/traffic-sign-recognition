@@ -1,10 +1,15 @@
 import datetime
 import io
+import re
+import hashlib
+import urllib.request
+import urllib.parse
 from typing import Optional
 from PIL import Image
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response, Query
 from sqlalchemy.orm import Session
 
+from backend.config import TTS_CACHE_DIR
 from backend.database import get_db
 from backend.models import User, DashcamVideo, SafetyEvent
 from backend.schemas import SafetyEventResponse, EventFeedbackUpdate
@@ -117,3 +122,121 @@ def update_event_feedback(
 def get_model_evaluation_report():
     """Returns empirical measured test-set accuracy, precision, and latency metrics."""
     return ai_manager.get_evaluation_metrics()
+
+
+def chunk_tts_text(text: str, max_chars: int = 110) -> list:
+    """Splits long prompts on spaces so each chunk remains within Google TTS character limits."""
+    words = text.split()
+    chunks = []
+    current_words = []
+    current_len = 0
+
+    for word in words:
+        if len(word) > max_chars:
+            if current_words:
+                chunks.append(" ".join(current_words))
+                current_words = []
+                current_len = 0
+            chunks.append(word[:max_chars])
+            continue
+
+        if current_len + len(word) + 1 > max_chars:
+            if current_words:
+                chunks.append(" ".join(current_words))
+            current_words = [word]
+            current_len = len(word)
+        else:
+            current_words.append(word)
+            current_len += len(word) + 1
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    return chunks or [text]
+
+
+@router.get("/tts")
+def stream_tts_audio(
+    text: str = Query(..., min_length=1, max_length=1000, description="Text prompt to synthesize into voice audio"),
+    lang: str = Query("en", description="Language code: 'te' (Telugu), 'hi' (Hindi), or 'en' (English)")
+):
+    """
+    Synthesizes authentic multi-language voice alerts (Telugu, Hindi, English)
+    with chunked streaming and disk caching for seamless client playback.
+    """
+    clean_text = text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Empty text provided.")
+
+    lang_code = lang.lower().strip()
+    if lang_code in ("te", "te-in"):
+        tl = "te"
+        clean_text = clean_text.replace("₹", " రూపాయలు ").replace("–", " నుండి ").replace("-", " ").replace("/", " లేదా ")
+    elif lang_code in ("hi", "hi-in"):
+        tl = "hi"
+        clean_text = clean_text.replace("₹", " रुपये ").replace("–", " से ").replace("-", " ").replace("/", " या ")
+    else:
+        tl = "en"
+        clean_text = clean_text.replace("₹", " Rupees ").replace("–", " to ").replace("-", " ").replace("/", " or ")
+
+    clean_text = re.sub(r"\s+", " ", clean_text).strip()
+
+    # Deterministic cache key
+    text_hash = hashlib.md5(f"{tl}:{clean_text}".encode("utf-8")).hexdigest()
+    cache_file = TTS_CACHE_DIR / f"{tl}_{text_hash}.mp3"
+
+    # Return cached audio if present
+    if cache_file.exists() and cache_file.stat().st_size > 500:
+        audio_bytes = cache_file.read_bytes()
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "public, max-age=604800, immutable",
+                "X-AeroVision-TTS-Cached": "HIT",
+                "X-AeroVision-Language": tl
+            }
+        )
+
+    # Fetch chunked audio from Google TTS service and concatenate MP3 frames
+    try:
+        chunks = chunk_tts_text(clean_text, max_chars=110)
+        combined_audio = bytearray()
+
+        for chunk in chunks:
+            encoded_query = urllib.parse.quote(chunk)
+            google_tts_url = (
+                f"https://translate.google.com/translate_tts?ie=UTF-8&tl={tl}&client=tw-ob&q={encoded_query}"
+            )
+            req = urllib.request.Request(
+                google_tts_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "Referer": "https://translate.google.com/"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=8) as response:
+                if response.status != 200:
+                    raise Exception(f"Google TTS returned status {response.status}")
+                chunk_bytes = response.read()
+                combined_audio.extend(chunk_bytes)
+
+        final_bytes = bytes(combined_audio)
+        if len(final_bytes) > 500:
+            cache_file.write_bytes(final_bytes)
+
+        return Response(
+            content=final_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "public, max-age=604800, immutable",
+                "X-AeroVision-TTS-Cached": "MISS",
+                "X-AeroVision-Language": tl
+            }
+        )
+    except Exception as e:
+        print(f"[TTS GENERATION ERROR] {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Speech synthesis generation failed: {str(e)}"
+        )

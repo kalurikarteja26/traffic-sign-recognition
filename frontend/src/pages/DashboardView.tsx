@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
+import { toast } from '../components/Toast';
 
 interface DashboardViewProps {
   onNavigate: (tab: string) => void;
@@ -73,7 +74,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, user: 
   };
 
   return (
-    <div className="flex flex-col w-full gap-6 relative text-on-surface">
+    <div className="flex flex-col w-full max-w-full gap-6 relative text-on-surface overflow-hidden">
       {/* Ambient cockpit illumination orbs */}
       <div className="absolute -top-24 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
       <div className="absolute top-1/2 right-0 w-[500px] h-[500px] bg-cyan-400/5 rounded-full blur-3xl pointer-events-none"></div>
@@ -327,13 +328,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, user: 
                   ))
                 ) : (
                   <>
-                    <button className="px-3 py-1 rounded bg-[#162B4D] text-cyan-400 font-mono text-xs font-semibold shadow-sm">
+                    <button
+                      onClick={() => onNavigate('vehicles')}
+                      className="px-3 py-1 rounded bg-[#162B4D] text-cyan-400 font-mono text-xs font-semibold shadow-sm hover:brightness-110 transition-all"
+                      title="View vehicle in Garage"
+                    >
                       DL-01-AB-4092
                     </button>
-                    <button className="px-3 py-1 rounded text-slate-400 hover:text-white font-mono text-xs">
+                    <button
+                      onClick={() => onNavigate('vehicles')}
+                      className="px-3 py-1 rounded text-slate-400 hover:text-white font-mono text-xs hover:bg-white/5 transition-all"
+                      title="View vehicle in Garage"
+                    >
                       HR-26-DQ-1102
                     </button>
-                    <button className="px-3 py-1 rounded text-slate-400 hover:text-white font-mono text-xs">
+                    <button
+                      onClick={() => onNavigate('vehicles')}
+                      className="px-3 py-1 rounded text-slate-400 hover:text-white font-mono text-xs hover:bg-white/5 transition-all"
+                      title="View vehicle in Garage"
+                    >
                       TS-09-EA-8842
                     </button>
                   </>
@@ -847,7 +860,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, user: 
                     Target: <span className="font-mono text-white">HR-26-DQ-1102</span> • Euro 6 / BS-VI
                   </p>
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="font-mono text-[10px] text-cyan-400">Find Nearest Test Center</span>
+                    <button
+                      onClick={() => {
+                        toast.info('Opening official Parivahan PUC Test Center locator...');
+                        window.open('https://vahan.parivahan.gov.in/puc/', '_blank');
+                      }}
+                      className="font-mono text-[10px] text-cyan-400 hover:text-cyan-300 hover:underline transition-colors flex items-center gap-1 text-left"
+                    >
+                      <span>Find Nearest Test Center</span>
+                      <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -866,7 +888,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, user: 
                     Target: <span className="font-mono text-white">DL-01-AB-4092</span> • ICICI Lombard Policy
                   </p>
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="font-mono text-[10px] text-blue-400">Review Quote (-15% Safe Driver)</span>
+                    <button
+                      onClick={() => {
+                        toast.success('Safe Driver Reward: 15% discount voucher pre-applied to renewal policy.');
+                      }}
+                      className="font-mono text-[10px] text-blue-400 hover:text-blue-300 hover:underline transition-colors text-left"
+                    >
+                      Review Quote (-15% Safe Driver) →
+                    </button>
                   </div>
                 </div>
               </div>

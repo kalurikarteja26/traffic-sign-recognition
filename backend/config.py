@@ -7,11 +7,13 @@ STORAGE_DIR = BASE_DIR / "uploads"
 VIDEOS_DIR = STORAGE_DIR / "videos"
 CHALLANS_DIR = STORAGE_DIR / "challans"
 SNAPSHOTS_DIR = STORAGE_DIR / "snapshots"
+TTS_CACHE_DIR = STORAGE_DIR / "tts_cache"
 
 # Ensure upload directories exist
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 CHALLANS_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class Settings(BaseModel):
     PROJECT_NAME: str = "AeroVision — Intelligent Road Safety & Vehicle Intelligence Platform"

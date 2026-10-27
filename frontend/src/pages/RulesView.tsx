@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { api } from '../api';
+import { speechService, type AlertLanguage } from '../services/speechService';
 import {
   TRAFFIC_RULES_QUIZ_BANK,
   QUIZ_CATEGORIES,
@@ -7,16 +8,25 @@ import {
 import type { TrafficQuizQuestion } from '../data/trafficQuizData';
 import { ALL_108_RTO_SIGNS } from '../data/rtoSignsData';
 import type { RtoSignItem } from '../data/rtoSignsData';
+import {
+  CHANNELIZED_SIGNS_108,
+  getChannelizedAlert,
+  type ChannelizedSignItem,
+} from '../data/channelizedSigns108';
 
 interface SignData {
   id?: number;
   class_id?: number;
   sign_code: string;
   name: string;
+  name_te?: string;
+  name_hi?: string;
   category: string;
   shape: string;
   color_code: string;
   meaning: string;
+  meaning_te?: string;
+  meaning_hi?: string;
   penalty_info?: string;
   legal_reference?: string;
   svg?: string;
@@ -27,6 +37,10 @@ interface SignData {
   pitfall?: string;
   speed_limit?: number | null;
   tts_prompt?: string;
+  tts_prompt_en?: string;
+  tts_prompt_te?: string;
+  tts_prompt_hi?: string;
+  urgency?: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL';
 }
 
 const TAG_FILTERS = [
@@ -159,6 +173,7 @@ export const RulesView: React.FC = () => {
   // Audio Speech Synthesis / Voice Tutor
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [speakingSignCode, setSpeakingSignCode] = useState<string | null>(null);
+  const [tutorLang, setTutorLang] = useState<AlertLanguage>(speechService.getSettings().language);
 
   // Quiz State
   const [quizQuestions, setQuizQuestions] = useState<TrafficQuizQuestion[]>(TRAFFIC_RULES_QUIZ_BANK);
@@ -265,42 +280,51 @@ export const RulesView: React.FC = () => {
 
   // Audio Speech Synthesis / Voice Tutor
   const speakSign = useCallback((sign: SignData) => {
-    if (!('speechSynthesis' in window)) return;
     if (isSpeaking && speakingSignCode === sign.sign_code) {
-      window.speechSynthesis.cancel();
+      speechService.stop();
       setIsSpeaking(false);
       setSpeakingSignCode(null);
       return;
     }
 
-    window.speechSynthesis.cancel();
-    const cleanText =
-      sign.tts_prompt ||
-      `${sign.name}. Category: ${sign.category}. ${sign.meaning}. Mandatory action: ${sign.halt || ''}. Penalty fine: ${sign.penalty_info || ''}.`;
+    speechService.stop();
+    const cid = sign.class_id ?? -1;
+    const ch = (cid >= 0 && cid <= 107) ? CHANNELIZED_SIGNS_108[cid] : null;
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.rate = 0.92;
-    utterance.pitch = 1.0;
-    utterance.onend = () => {
-      setIsSpeaking(false);
-      setSpeakingSignCode(null);
-    };
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-      setSpeakingSignCode(null);
-    };
+    let promptText = '';
+    let urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL' = ch?.urgency || 'WARNING';
+
+    if (tutorLang === 'te') {
+      const alertTe = ch?.alert_te || sign.tts_prompt_te;
+      const meaningTe = ch?.meaning_te || sign.meaning_te;
+      if (alertTe) {
+        promptText = `${alertTe} వివరణ: ${meaningTe || sign.meaning}. చట్టపరమైన జరిమానా: ${sign.penalty_info || 'నిబంధనల ప్రకారం వర్తిస్తుంది'}.`;
+      } else {
+        promptText = `హెచ్చరిక: ${sign.name_te || sign.name}. అర్థం: ${sign.meaning_te || sign.meaning}. చట్టపరమైన జరిమానా: ${sign.penalty_info || 'నిబంధనల ప్రకారం వర్తిస్తుంది'}.`;
+      }
+    } else if (tutorLang === 'hi') {
+      const alertHi = ch?.alert_hi || sign.tts_prompt_hi;
+      const meaningHi = ch?.meaning_hi || sign.meaning_hi;
+      if (alertHi) {
+        promptText = `${alertHi} विवरण: ${meaningHi || sign.meaning}। कानूनी जुर्माना: ${sign.penalty_info || 'नियमानुसार लागू'}।`;
+      } else {
+        promptText = `चेतावनी: ${sign.name_hi || sign.name}। अर्थ: ${sign.meaning_hi || sign.meaning}। कानूनी जुर्माना: ${sign.penalty_info || 'नियमानुसार लागू'}।`;
+      }
+    } else {
+      const alertEn = ch?.alert_en || sign.tts_prompt_en || sign.tts_prompt;
+      const meaningEn = ch?.meaning_en || sign.meaning;
+      promptText = `${alertEn || sign.name} Meaning: ${meaningEn}. Statutory penalty: ${sign.penalty_info || 'Rules apply'}.`;
+    }
 
     setIsSpeaking(true);
     setSpeakingSignCode(sign.sign_code);
-    window.speechSynthesis.speak(utterance);
-  }, [isSpeaking, speakingSignCode]);
+    speechService.speak(promptText, urgency, tutorLang);
+  }, [isSpeaking, speakingSignCode, tutorLang]);
 
   // Stop speech when unmounting
   useEffect(() => {
     return () => {
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      speechService.stop();
     };
   }, []);
 
@@ -311,8 +335,12 @@ export const RulesView: React.FC = () => {
       const matchesSearch =
         !q ||
         s.name.toLowerCase().includes(q) ||
+        (s.name_te && s.name_te.toLowerCase().includes(q)) ||
+        (s.name_hi && s.name_hi.toLowerCase().includes(q)) ||
         s.sign_code.toLowerCase().includes(q) ||
         s.meaning.toLowerCase().includes(q) ||
+        (s.meaning_te && s.meaning_te.toLowerCase().includes(q)) ||
+        (s.meaning_hi && s.meaning_hi.toLowerCase().includes(q)) ||
         (s.penalty_info && s.penalty_info.toLowerCase().includes(q)) ||
         (s.legal_reference && s.legal_reference.toLowerCase().includes(q)) ||
         (s.pitfall && s.pitfall.toLowerCase().includes(q));
@@ -512,7 +540,7 @@ export const RulesView: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col w-full gap-6 max-w-[1720px] mx-auto text-on-surface">
+    <div className="flex flex-col w-full max-w-full gap-6 max-w-[1720px] mx-auto text-on-surface overflow-hidden">
       {/* Title & Status Header */}
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
@@ -565,6 +593,28 @@ export const RulesView: React.FC = () => {
                 </span>
               )}
             </button>
+          </div>
+
+          {/* Multi-lingual Voice Tutor Selector */}
+          <div className="bg-[#10203B] border border-white/10 p-1 rounded-xl flex items-center shadow-lg gap-1">
+            <span className="material-symbols-outlined text-xs text-cyan-400 pl-1">record_voice_over</span>
+            {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+              <button
+                key={lang}
+                onClick={() => {
+                  setTutorLang(lang);
+                  speechService.setLanguage(lang);
+                }}
+                className={`px-2 py-1 rounded-lg text-xs font-mono transition-all ${
+                  tutorLang === lang
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title={`Switch Voice Tutor to ${lang === 'te' ? 'Telugu' : lang === 'hi' ? 'Hindi' : 'English'}`}
+              >
+                {lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिन्दी'}
+              </button>
+            ))}
           </div>
 
           <button
@@ -755,6 +805,32 @@ export const RulesView: React.FC = () => {
             );
           })}
         </div>
+
+        {/* Voice Tutor Language Selector */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/5 text-xs font-mono">
+          <div className="flex items-center gap-1.5 text-slate-400">
+            <span className="material-symbols-outlined text-xs text-cyan-400">volume_up</span>
+            <span className="text-[11px] uppercase tracking-wider">Voice Tutor Audio Language:</span>
+          </div>
+          <div className="flex items-center gap-1 bg-[#070e1c] p-1 rounded-lg border border-white/10">
+            {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+              <button
+                key={lang}
+                onClick={() => {
+                  setTutorLang(lang);
+                  speechService.updateSettings({ language: lang });
+                }}
+                className={`px-2.5 py-1 rounded text-xs transition-colors flex items-center gap-1 ${
+                  tutorLang === lang
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow-[0_0_8px_rgba(6,182,212,0.4)]'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>{lang === 'en' ? 'EN (English)' : lang === 'te' ? 'తెలుగు (Telugu)' : 'हिंदी (Hindi)'}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* VIEW MODE 1: INTERACTIVE FLASHCARD TRAINING */}
@@ -865,10 +941,23 @@ export const RulesView: React.FC = () => {
                   <div className="w-full space-y-4 animate-in fade-in zoom-in-95 duration-200">
                     <div className="text-center">
                       <h3 className="font-heading font-black text-2xl text-white">
-                        {currentFlashcard.name}
+                        {tutorLang === 'te' && currentFlashcard.name_te
+                          ? currentFlashcard.name_te
+                          : tutorLang === 'hi' && currentFlashcard.name_hi
+                          ? currentFlashcard.name_hi
+                          : currentFlashcard.name}
                       </h3>
-                      <p className="font-body-md text-xs sm:text-sm text-cyan-300 mt-1 max-w-lg mx-auto">
-                        {currentFlashcard.meaning}
+                      {tutorLang !== 'en' && (
+                        <p className="font-mono text-xs text-cyan-400 mt-0.5">
+                          {currentFlashcard.name}
+                        </p>
+                      )}
+                      <p className="font-body-md text-xs sm:text-sm text-cyan-300 mt-1.5 max-w-lg mx-auto">
+                        {tutorLang === 'te' && currentFlashcard.meaning_te
+                          ? currentFlashcard.meaning_te
+                          : tutorLang === 'hi' && currentFlashcard.meaning_hi
+                          ? currentFlashcard.meaning_hi
+                          : currentFlashcard.meaning}
                       </p>
                     </div>
 
@@ -1090,10 +1179,23 @@ export const RulesView: React.FC = () => {
                           </div>
 
                           <h2 className="font-heading font-bold text-sm text-white group-hover:text-cyan-400 transition-colors truncate">
-                            {s.name}
+                            {tutorLang === 'te' && s.name_te
+                              ? s.name_te
+                              : tutorLang === 'hi' && s.name_hi
+                              ? s.name_hi
+                              : s.name}
                           </h2>
+                          {tutorLang !== 'en' && (
+                            <span className="font-mono text-[10px] text-slate-500 block truncate">
+                              {s.name}
+                            </span>
+                          )}
                           <p className="font-body-sm text-xs text-slate-400 line-clamp-2 mt-0.5 leading-relaxed">
-                            {s.meaning}
+                            {tutorLang === 'te' && s.meaning_te
+                              ? s.meaning_te
+                              : tutorLang === 'hi' && s.meaning_hi
+                              ? s.meaning_hi
+                              : s.meaning}
                           </p>
                         </div>
                       </div>
@@ -1270,8 +1372,17 @@ export const RulesView: React.FC = () => {
 
                   <div className="mt-4 text-center">
                     <span className="font-heading font-bold text-base text-white block">
-                      {selectedSign.name}
+                      {tutorLang === 'te' && selectedSign.name_te
+                        ? selectedSign.name_te
+                        : tutorLang === 'hi' && selectedSign.name_hi
+                        ? selectedSign.name_hi
+                        : selectedSign.name}
                     </span>
+                    {tutorLang !== 'en' && (
+                      <span className="font-mono text-xs text-cyan-300 block">
+                        {selectedSign.name}
+                      </span>
+                    )}
                     <span className="font-mono text-xs text-slate-400">
                       #{String(selectedSign.class_id ?? 0).padStart(3, '0')} • {selectedSign.sign_code} Standard
                     </span>
@@ -1298,7 +1409,11 @@ export const RulesView: React.FC = () => {
                     <span>DRIVER MANDATE & MEANING</span>
                   </span>
                   <p className="text-xs text-slate-200 mt-0.5 leading-relaxed">
-                    {selectedSign.meaning}
+                    {tutorLang === 'te' && selectedSign.meaning_te
+                      ? selectedSign.meaning_te
+                      : tutorLang === 'hi' && selectedSign.meaning_hi
+                      ? selectedSign.meaning_hi
+                      : selectedSign.meaning}
                   </p>
                   {selectedSign.halt && (
                     <div className="mt-1 text-[11px] font-mono text-emerald-400 bg-emerald-500/10 p-2 rounded border border-emerald-500/20">

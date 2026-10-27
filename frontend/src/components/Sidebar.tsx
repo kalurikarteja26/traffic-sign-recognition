@@ -21,6 +21,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'nav-alerts', label: 'Nav & Voice Alerts', icon: 'navigation', authRequired: false },
     { id: 'vault', label: 'Dashcam Vault', icon: 'videocam', authRequired: true },
     { id: 'ai-studio', label: 'AI Road Intelligence', icon: 'smart_toy', authRequired: false },
+    { id: 'profile', label: 'Pilot Profile', icon: 'person', authRequired: true },
   ];
 
   if (user && user.role === 'admin') {

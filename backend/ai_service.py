@@ -21,6 +21,7 @@ class AIServiceManager:
         self.alert_system = DriverAlertSystem(confidence_threshold=0.30)
         self.coordinator = TrafficSafetyCoordinator(threshold=0.30, required_frames=2)
         self.adapter = None
+        self._load_canonical_records()
         self._load_model()
 
     @classmethod
@@ -55,6 +56,406 @@ class AIServiceManager:
         else:
             print("[AI SERVICE WARNING] No trained model weights found in models/")
 
+    def _load_canonical_records(self):
+        """Loads all 108 Indian RTO canonical records and pre-caches template glyphs."""
+        self.records_108 = {}
+        rec_path = Path("dataset/channelized_signs_108.json")
+        if rec_path.exists():
+            try:
+                with open(rec_path, "r", encoding="utf-8") as f:
+                    self.records_108 = json.load(f)
+            except Exception as e:
+                print(f"[AI SERVICE] Failed loading channelized_signs_108.json: {e}")
+
+        self.canonical_templates = {}
+        self.canonical_glyphs = {}
+        signs_dir = Path("frontend/public/signs")
+        if signs_dir.exists():
+            for cid in range(108):
+                p = signs_dir / f"{cid:03d}.png"
+                if p.exists():
+                    img = cv2.imread(str(p))
+                    if img is not None:
+                        # Extract the actual sign plate by finding non-white contour
+                        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                        cnts, _ = cv2.findContours((gray < 240).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if cnts:
+                            c = max(cnts, key=cv2.contourArea)
+                            bx, by, bw, bh = cv2.boundingRect(c)
+                            sign_plate = img[by:by+bh, bx:bx+bw]
+                        else:
+                            sign_plate = img
+
+                        # Centered canonical template on clean 128x128 white canvas
+                        target_dim = 128
+                        canvas = np.full((target_dim, target_dim, 3), 255, dtype=np.uint8)
+                        ph, pw = sign_plate.shape[:2]
+                        scale = min(72.0 / max(1, pw), 72.0 / max(1, ph))
+                        nw, nh = max(8, int(pw * scale)), max(8, int(ph * scale))
+                        sp_res = cv2.resize(sign_plate, (nw, nh))
+                        yo = (target_dim - nh) // 2
+                        xo = (target_dim - nw) // 2
+                        canvas[yo:yo+nh, xo:xo+nw] = sp_res
+                        self.canonical_templates[cid] = canvas
+
+                        # Mask out outer red border to ensure pure central symbol without border bleed
+                        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+                        m1 = cv2.inRange(hsv, np.array([0, 45, 30]), np.array([14, 255, 255]))
+                        m2 = cv2.inRange(hsv, np.array([155, 45, 30]), np.array([180, 255, 255]))
+                        mask_red = cv2.bitwise_or(m1, m2)
+                        clean_img = img.copy()
+                        clean_img[mask_red > 0] = (255, 255, 255)
+                        clean_plate = clean_img[by:by+bh, bx:bx+bw]
+
+                        # Extract clean central glyph
+                        rec = self.records_108.get(str(cid), {})
+                        cat = rec.get("category", "MANDATORY")
+                        if cid in (0, 2):
+                            inner = sign_plate[int(ph * 0.22):int(ph * 0.78), int(pw * 0.22):int(pw * 0.78)]
+                        elif cat == "CAUTIONARY" or cid in range(46, 87):
+                            inner = clean_plate[int(ph * 0.35):int(ph * 0.85), int(pw * 0.20):int(pw * 0.80)]
+                        elif cid == 1:
+                            inner = clean_plate[int(ph * 0.15):int(ph * 0.65), int(pw * 0.20):int(pw * 0.80)]
+                        elif cat == "MANDATORY" and cid in range(23, 33):
+                            inner = sign_plate[int(ph * 0.22):int(ph * 0.78), int(pw * 0.22):int(pw * 0.78)]
+                        else:
+                            inner = clean_plate[int(ph * 0.22):int(ph * 0.78), int(pw * 0.22):int(pw * 0.78)]
+
+                        glyph_canvas = np.zeros((64, 64), dtype=np.uint8)
+                        if inner.size > 0:
+                            igray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
+                            if (cat == "MANDATORY" and cid in range(23, 33)) or cid in (0, 2):
+                                _, ith = cv2.threshold(igray, 190, 255, cv2.THRESH_BINARY)
+                            else:
+                                _, ith = cv2.threshold(igray, 125, 255, cv2.THRESH_BINARY_INV)
+
+                            cnts_sym, _ = cv2.findContours(ith, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            if cnts_sym:
+                                valid_s = [sc for sc in cnts_sym if cv2.contourArea(sc) > 10]
+                                if valid_s:
+                                    all_s = np.vstack(valid_s)
+                                    tsx, tsy, tsw, tsh = cv2.boundingRect(all_s)
+                                    tsym = ith[tsy:tsy+tsh, tsx:tsx+tsw]
+                                    tscale = min(48.0 / max(1, tsw), 48.0 / max(1, tsh))
+                                    tnw, tnh = max(4, int(tsw * tscale)), max(4, int(tsh * tscale))
+                                    tsym_res = cv2.resize(tsym, (tnw, tnh), interpolation=cv2.INTER_NEAREST)
+                                    glyph_canvas[(64-tnh)//2:(64-tnh)//2+tnh, (64-tnw)//2:(64-tnw)//2+tnw] = tsym_res
+
+                        self.canonical_glyphs[cid] = glyph_canvas
+
+        print(f"[AI SERVICE] Pre-cached {len(self.canonical_glyphs)} high-fidelity RTO sign glyphs & records.")
+
+    def analyze_sign_candidate(self, crop_bgr: np.ndarray) -> Dict[str, Any]:
+        """
+        Stage 1: Analyzes the physical properties of the candidate sign:
+        - Chromatic ratios (Red border, Blue disk, Yellow caution diamond)
+        - Geometric shape classification (Upright Triangle, Inverted Triangle, Octagon, Circle)
+        - Central glyph extraction aligned to geometric centroid
+        """
+        h, w = crop_bgr.shape[:2]
+        if h < 8 or w < 8:
+            return {"valid": False}
+
+        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+        mask_r1 = cv2.inRange(hsv, np.array([0, 45, 30]), np.array([14, 255, 255]))
+        mask_r2 = cv2.inRange(hsv, np.array([155, 45, 30]), np.array([180, 255, 255]))
+        mask_red = cv2.bitwise_or(mask_r1, mask_r2)
+        red_ratio = float((np.sum(mask_r1 > 0) + np.sum(mask_r2 > 0)) / (w * h))
+
+        mask_blue = cv2.inRange(hsv, np.array([85, 40, 50]), np.array([135, 255, 255]))
+        blue_ratio = float(np.sum(mask_blue > 0) / (w * h))
+
+        mask_yellow = cv2.inRange(hsv, np.array([16, 50, 50]), np.array([36, 255, 255]))
+        yellow_ratio = float(np.sum(mask_yellow > 0) / (w * h))
+
+        # Geometric Contour & Polygon Analysis
+        shape_type = "UNKNOWN"
+        is_upright_triangle = False
+        is_inverted_triangle = False
+        is_octagon = False
+        is_circle = False
+
+        # Find largest colored contour (red, blue, or yellow)
+        combined_mask = mask_red if red_ratio > 0.06 else (mask_blue if blue_ratio > 0.15 else mask_yellow)
+        cnts, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if cnts:
+            largest = max(cnts, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            if area > (w * h * 0.04):
+                peri = cv2.arcLength(largest, True)
+                approx = cv2.approxPolyDP(largest, 0.045 * peri, True)
+                num_v = len(approx)
+                bx, by, bw, bh = cv2.boundingRect(largest)
+
+                circularity = (4 * np.pi * area / (peri * peri)) if peri > 0 else 0.0
+                pts = approx.reshape(-1, 2)
+                sorted_y = sorted(pts, key=lambda p: p[1])
+
+                top_dy = abs(sorted_y[1][1] - sorted_y[0][1])
+                bot_dy = abs(sorted_y[-1][1] - sorted_y[-2][1])
+
+                # Upright Triangle: single top apex, flat horizontal bottom
+                if num_v in (3, 4, 5) and top_dy > (bh * 0.22) and bot_dy < (bh * 0.25):
+                    is_upright_triangle = True
+                    shape_type = "UPRIGHT_TRIANGLE"
+                # Inverted Triangle (Give Way): flat horizontal top, single bottom apex
+                elif num_v in (3, 4, 5) and top_dy < (bh * 0.20) and bot_dy > (bh * 0.25):
+                    is_inverted_triangle = True
+                    shape_type = "INVERTED_TRIANGLE"
+                # Octagon (Stop sign): 7-9 vertices, or 6+ vertices with solid red and high circularity
+                elif (num_v in (7, 8, 9) and red_ratio > 0.25) or (num_v >= 6 and circularity > 0.70 and red_ratio > 0.40):
+                    is_octagon = True
+                    shape_type = "OCTAGON"
+                # Rectangle: 4 vertices, flat top and flat bottom
+                elif num_v == 4 and top_dy < (bh * 0.22) and bot_dy < (bh * 0.22):
+                    shape_type = "RECTANGLE"
+                # Circular: high circularity
+                elif circularity > 0.65 or (num_v >= 6 and circularity > 0.60):
+                    is_circle = True
+                    shape_type = "CIRCLE"
+
+        # Locate sign patch from detected bounding box or crop
+        sign_bbox = (0, 0, w, h)
+        if cnts and largest is not None:
+            sign_bbox = cv2.boundingRect(largest)
+        sbx, sby, sbw, sbh = sign_bbox
+        sign_patch = crop_bgr[sby:sby+sbh, sbx:sbx+sbw] if sbw > 16 and sbh > 16 else crop_bgr
+        sph, spw = sign_patch.shape[:2]
+
+        # Central glyph crop (adjusted for triangle vs circle)
+        if is_upright_triangle:
+            c_crop = sign_patch[int(sph * 0.35):int(sph * 0.85), int(spw * 0.20):int(spw * 0.80)]
+        elif is_inverted_triangle:
+            c_crop = sign_patch[int(sph * 0.15):int(sph * 0.65), int(spw * 0.20):int(spw * 0.80)]
+        else:
+            c_crop = sign_patch[int(sph * 0.22):int(sph * 0.78), int(spw * 0.22):int(spw * 0.78)]
+
+        glyph_mask = np.zeros((64, 64), dtype=np.uint8)
+        glyph_pixel_count = 0
+        if c_crop.size > 0:
+            c_gray = cv2.cvtColor(c_crop, cv2.COLOR_BGR2GRAY)
+            if blue_ratio > 0.35 or (red_ratio > 0.40 and not is_upright_triangle):
+                _, c_th = cv2.threshold(c_gray, 190, 255, cv2.THRESH_BINARY)
+            else:
+                _, c_th = cv2.threshold(c_gray, 115, 255, cv2.THRESH_BINARY_INV)
+
+            cnts_sym, _ = cv2.findContours(c_th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts_sym:
+                valid_sym = [sc for sc in cnts_sym if cv2.contourArea(sc) > max(15.0, c_crop.shape[0] * c_crop.shape[1] * 0.008)]
+                if valid_sym:
+                    all_s = np.vstack(valid_sym)
+                    tsx, tsy, tsw, tsh = cv2.boundingRect(all_s)
+                    tsym = c_th[tsy:tsy+tsh, tsx:tsx+tsw]
+                    scale = min(48.0 / max(1, tsw), 48.0 / max(1, tsh))
+                    nw, nh = max(4, int(tsw * scale)), max(4, int(tsh * scale))
+                    sym_res = cv2.resize(tsym, (nw, nh), interpolation=cv2.INTER_NEAREST)
+                    glyph_mask[(64-nh)//2:(64-nh)//2+nh, (64-nw)//2:(64-nw)//2+nw] = sym_res
+                    glyph_pixel_count = int(np.sum(glyph_mask > 0))
+
+        return {
+            "valid": True,
+            "red_ratio": red_ratio,
+            "blue_ratio": blue_ratio,
+            "yellow_ratio": yellow_ratio,
+            "shape_type": shape_type,
+            "is_upright_triangle": is_upright_triangle,
+            "is_inverted_triangle": is_inverted_triangle,
+            "is_octagon": is_octagon,
+            "is_circle": is_circle,
+            "glyph_mask": glyph_mask,
+            "glyph_pixel_count": glyph_pixel_count,
+        }
+
+    def search_records_and_verify(
+        self,
+        analysis: Dict[str, Any],
+        neural_probs: torch.Tensor,
+        candidate_tag: str = ""
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Stage 2: Cross-references the visual analysis and neural probabilities
+        with the 108 official Indian RTO canonical records.
+        Applies geometric constraints, glyph template matching, and chromatic consistency.
+        """
+        top_vals, top_ids = torch.topk(neural_probs, min(15, len(neural_probs)))
+        cand_glyph = analysis.get("glyph_mask")
+        glyph_pixels = analysis.get("glyph_pixel_count", 0)
+        red_ratio = analysis.get("red_ratio", 0.0)
+        blue_ratio = analysis.get("blue_ratio", 0.0)
+        yellow_ratio = analysis.get("yellow_ratio", 0.0)
+        is_upright_triangle = analysis.get("is_upright_triangle", False)
+        is_inverted_triangle = analysis.get("is_inverted_triangle", False)
+        is_octagon = analysis.get("is_octagon", False)
+        is_circle = analysis.get("is_circle", False)
+        shape_type = analysis.get("shape_type", "UNKNOWN")
+
+        # Candidate class set
+        candidate_cids = set(top_ids.tolist())
+
+        # Shape-Driven Candidate Injection:
+        if is_upright_triangle or (red_ratio > 0.08 and shape_type == "UPRIGHT_TRIANGLE"):
+            # Cautionary warning signs: Classes 46 to 86
+            for caut_id in range(46, 87):
+                candidate_cids.add(caut_id)
+        elif is_inverted_triangle:
+            candidate_cids.add(1) # Give Way
+        elif is_octagon or (red_ratio > 0.50 and not is_upright_triangle):
+            candidate_cids.add(0) # Stop Sign
+        elif is_circle or (red_ratio > 0.08 and not is_upright_triangle):
+            # Speed limits & Axle limits
+            for sl_id in range(12, 23):
+                candidate_cids.add(sl_id)
+            for re_id in range(43, 48):
+                candidate_cids.add(re_id)
+            if blue_ratio > 0.20:
+                for bl_id in range(23, 33):
+                    candidate_cids.add(bl_id)
+        elif shape_type == "RECTANGLE" or blue_ratio > 0.25:
+            # Informatory & Facility Signs (87 to 107)
+            for inf_id in range(87, 108):
+                candidate_cids.add(inf_id)
+
+        tag_bonus = 1.00
+        if "Canonical" in candidate_tag:
+            tag_bonus = 1.30
+        elif "Contour" in candidate_tag:
+            tag_bonus = 1.20
+        elif "Hough Circle" in candidate_tag:
+            tag_bonus = 1.15
+        elif candidate_tag.startswith("Reticle"):
+            tag_bonus = 1.10
+        elif candidate_tag == "Full Frame":
+            tag_bonus = 0.70
+
+        scored = []
+        for cid in candidate_cids:
+            prob = float(neural_probs[cid].item()) if cid < len(neural_probs) else 0.0
+            rec = self.records_108.get(str(cid), {})
+            cat = rec.get("category", "MANDATORY")
+            name = rec.get("name", f"Class {cid}")
+
+            # Template glyph cross-correlation with multi-offset search
+            tmpl_score = 0.0
+            if cid in self.canonical_glyphs and glyph_pixels > 25:
+                c_glyph = self.canonical_glyphs[cid]
+                if np.std(cand_glyph) > 5.0 and np.std(c_glyph) > 5.0:
+                    best_m = 0.0
+                    for oy in [-3, 0, 3]:
+                        for ox in [-3, 0, 3]:
+                            M = np.float32([[1, 0, ox], [0, 1, oy]])
+                            shifted = cv2.warpAffine(cand_glyph, M, (64, 64), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                            res = cv2.matchTemplate(shifted, c_glyph, cv2.TM_CCOEFF_NORMED)
+                            val = float(res[0][0])
+                            if val > best_m:
+                                best_m = val
+                    tmpl_score = max(0.0, best_m)
+
+            # Geometric Shape Consistency Enforcement
+            geom_mult = 1.0
+            if is_upright_triangle:
+                if cat == "CAUTIONARY":
+                    geom_mult = 1.65
+                elif cid in (0, 1):
+                    # Upright triangle CANNOT be Stop Sign (octagon) or Give Way (inverted)
+                    geom_mult = 0.001
+                elif cat == "MANDATORY":
+                    geom_mult = 0.02
+                elif cat == "INFORMATORY":
+                    geom_mult = 0.01
+
+            elif is_inverted_triangle:
+                if cid == 1:
+                    geom_mult = 2.00
+                else:
+                    geom_mult = 0.01
+
+            elif is_octagon:
+                if cid == 0:
+                    geom_mult = 2.00
+                elif cat == "CAUTIONARY":
+                    geom_mult = 0.05
+
+            elif is_circle:
+                if cat == "MANDATORY":
+                    geom_mult = 1.35
+                elif cat == "CAUTIONARY":
+                    geom_mult = 0.10
+
+            elif shape_type == "RECTANGLE":
+                if cat == "INFORMATORY":
+                    geom_mult = 1.65
+                elif cat == "CAUTIONARY":
+                    geom_mult = 0.01
+                elif cid in (0, 1):
+                    geom_mult = 0.001
+                elif cat == "MANDATORY":
+                    geom_mult = 0.05
+
+            else:
+                # Color based fallback if shape inconclusive
+                if red_ratio > 0.10:
+                    if cat in ("MANDATORY", "CAUTIONARY"):
+                        geom_mult = 1.25
+                    elif cat == "INFORMATORY":
+                        geom_mult = 0.25
+                elif blue_ratio > 0.20:
+                    if cat == "INFORMATORY" or (cat == "MANDATORY" and "compulsory" in name.lower()):
+                        geom_mult = 1.30
+                    else:
+                        geom_mult = 0.25
+                elif yellow_ratio > 0.15:
+                    if cat == "CAUTIONARY":
+                        geom_mult = 1.30
+                    else:
+                        geom_mult = 0.40
+
+            # Chromatic Consistency Enforcement
+            color_mult = 1.0
+            if blue_ratio > 0.22 and blue_ratio > red_ratio:
+                if cat == "INFORMATORY" or (cat == "MANDATORY" and cid in range(23, 33)):
+                    color_mult = 1.45
+                elif cat == "MANDATORY" and cid not in range(23, 33):
+                    color_mult = 0.05
+                elif cat == "CAUTIONARY":
+                    color_mult = 0.02
+            elif red_ratio > 0.12 and red_ratio > blue_ratio:
+                if cat == "MANDATORY" and cid in range(23, 33):
+                    color_mult = 0.05
+                elif cat == "INFORMATORY":
+                    color_mult = 0.05
+
+            # Disambiguate numeric speed limits vs vehicle/axle weight limits
+            speed_mult = 1.0
+            if "speed limit" in name.lower():
+                if tmpl_score > 0.60:
+                    speed_mult = 1.45
+                elif tmpl_score < 0.35:
+                    speed_mult = 0.80
+            elif "axle load" in name.lower() or "load limit" in name.lower():
+                if tmpl_score < 0.70:
+                    speed_mult = 0.65
+
+            shape_bonus = 1.25 if shape_type != "UNKNOWN" else 0.70
+            if glyph_pixels > 25:
+                composite = (prob * 0.35 + tmpl_score * 0.65) * geom_mult * color_mult * speed_mult * tag_bonus * shape_bonus
+            else:
+                composite = prob * geom_mult * color_mult * tag_bonus * shape_bonus
+
+            scored.append({
+                "class_id": cid,
+                "name": name,
+                "category": cat,
+                "urgency": rec.get("urgency", "WARNING"),
+                "neural_prob": prob,
+                "glyph_match": round(tmpl_score, 3),
+                "composite_score": round(composite, 4),
+                "record": rec
+            })
+
+        scored.sort(key=lambda x: x["composite_score"], reverse=True)
+        winner = scored[0] if scored else None
+        return winner, scored[:5]
+
     def safe_square_crop(self, frame_bgr: np.ndarray, cx: int, cy: int, side: int) -> np.ndarray:
         """
         Extracts a geometrically un-distorted square crop of dimension (side x side) centered at (cx, cy).
@@ -82,12 +483,11 @@ class AIServiceManager:
             canvas[dst_y1:dst_y1 + copy_h, dst_x1:dst_x1 + copy_w] = frame_bgr[src_y1:src_y1 + copy_h, src_x1:src_x1 + copy_w]
         return canvas
 
-    def make_isolated_sign_crop(self, frame_bgr: np.ndarray, bx: int, by: int, bw: int, bh: int, pad_ratio: float = 2.10) -> Optional[np.ndarray]:
+    def make_isolated_sign_crop(self, frame_bgr: np.ndarray, bx: int, by: int, bw: int, bh: int, pad_ratio: float = 2.10, center_offset_y: float = 0.0) -> Optional[np.ndarray]:
         """
         Extracts the sign bounding box and centers it on a clean white (255, 255, 255) square canvas
         at the canonical 48% template ratio (pad_ratio=2.10).
-        This eliminates background clutter (dashboards, hands, phone bezels, text) and matches
-        the training distribution of the 108 Indian RTO canonical templates.
+        Optional center_offset_y shifts the sign downward to match the historical training distribution.
         """
         h, w = frame_bgr.shape[:2]
         x1, y1 = max(0, bx), max(0, by)
@@ -100,7 +500,8 @@ class AIServiceManager:
             return None
         target_dim = max(32, int(max(pw, ph) * pad_ratio))
         canvas = np.full((target_dim, target_dim, 3), 255, dtype=np.uint8)
-        yo = (target_dim - ph) // 2
+        yo = int((target_dim - ph) // 2 + target_dim * center_offset_y)
+        yo = max(0, min(target_dim - ph, yo))
         xo = (target_dim - pw) // 2
         canvas[yo:yo + ph, xo:xo + pw] = sign_patch
         return canvas
@@ -144,6 +545,9 @@ class AIServiceManager:
                         iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
                         if iso_crop is not None:
                             candidates.append((bx, by, bw, bh, iso_crop, "Red Sign Canonical"))
+                        iso_train = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10, center_offset_y=0.13)
+                        if iso_train is not None:
+                            candidates.append((bx, by, bw, bh, iso_train, "Red Sign Trained Dist"))
         except Exception:
             pass
 
@@ -392,12 +796,14 @@ class AIServiceManager:
                 valid_crops.append(tensor_c)
                 valid_meta.append((x, y, bw, bh, crop, sq, tag))
 
-        best_res = None
+        best_winner = None
+        best_top5 = []
         best_box = (0, 0, w, h)
         best_crop = np_bgr
         best_sq_crop = np_bgr
         best_quality = -1.0
         best_probs = None
+        best_analysis = None
 
         if valid_crops:
             batch = torch.stack(valid_crops).to(self.predictor.device)
@@ -407,83 +813,42 @@ class AIServiceManager:
 
             for i, (x, y, bw, bh, crop, sq, tag) in enumerate(valid_meta):
                 probs_i = all_probs[i]
-                top_vals, top_ids = torch.topk(probs_i, 2)
-                conf = top_vals[0].item()
-                margin = (top_vals[0] - top_vals[1]).item()
-                cid = top_ids[0].item()
-
-                weight = 1.00
-                if "Canonical" in tag:
-                    weight = 1.30
-                elif "Contour" in tag:
-                    weight = 1.20
-                elif "Hough Circle" in tag:
-                    weight = 1.15
-                elif tag.startswith("Reticle"):
-                    weight = 1.10
-                elif tag == "Full Frame":
-                    weight = 0.65
-
-                quality = (conf * 0.55 + margin * 0.45) * weight
-                if quality > best_quality:
-                    best_quality = quality
+                analysis = self.analyze_sign_candidate(sq)
+                winner, top5_recs = self.search_records_and_verify(analysis, probs_i, tag)
+                if winner and winner["composite_score"] > best_quality:
+                    best_quality = winner["composite_score"]
+                    best_winner = winner
+                    best_top5 = top5_recs
                     best_box = (x, y, bw, bh)
                     best_crop = crop
                     best_sq_crop = sq
                     best_probs = probs_i
-                    cname = self.predictor.class_names.get(cid, f"Class_{cid}")
-                    best_res = {
-                        "class_id": cid,
-                        "class_name": cname,
-                        "confidence_score": conf,
-                        "confidence_percentage": round(conf * 100.0, 1),
-                        "margin_score": margin
-                    }
-
-        if best_res is None:
-            # Fallback on full frame
-            best_sq_crop = self.safe_square_crop(np_bgr, cx, cy, max(h, w))
-            best_res = self.predictor.predict(best_sq_crop, use_tta=use_tta)
-            best_box = (0, 0, w, h)
-            best_crop = np_bgr
-        elif use_tta and 0.35 <= best_res.get("confidence_score", 0.0) <= 0.85:
-            # Run TTA refinement on ONLY the winning crop if explicitly requested
-            try:
-                tta_res = self.predictor.predict(best_sq_crop, use_tta=True)
-                if tta_res.get("confidence_score", 0.0) >= best_res.get("confidence_score", 0.0) * 0.85:
-                    best_res = tta_res
-            except Exception:
-                pass
-
-        # Robust Noise Rejection & Signal Filter:
-        # A valid Indian RTO road sign creates a distinct confidence concentration (>= 0.28) and margin gap (>= 0.04).
-        # Background textures (walls, faces, keyboards) produce diffuse, flat distributions that are cleanly rejected.
-        conf = best_res.get("confidence_score", 0.0)
-        margin = best_res.get("margin_score", 0.0)
-        is_detected = bool(conf >= 0.28 and margin >= 0.04)
-        is_confirmed = bool(is_detected and ((conf >= 0.48 and margin >= 0.12) or (conf >= 0.62)))
+                    best_analysis = analysis
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if not is_detected:
-            # Clean Standby State: No spurious sign flipping when camera views background
+        if best_winner is None or best_quality < 0.28:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {
                     "class_id": -1,
                     "class_name": "Scanning for Signs...",
-                    "confidence_score": conf,
-                    "confidence_percentage": round(conf * 100.0, 1),
-                    "margin_score": margin
+                    "confidence_score": 0.0,
+                    "confidence_percentage": 0.0,
+                    "margin_score": 0.0
                 },
                 "primary_prediction": {
                     "sign_name": "Scanning for Signs...",
                     "class_id": -1,
-                    "confidence": conf,
-                    "confidence_percentage": round(conf * 100.0, 1),
-                    "margin_score": margin,
+                    "confidence": 0.0,
+                    "confidence_percentage": 0.0,
+                    "margin_score": 0.0,
                     "is_detected": False,
                     "is_confirmed": False,
+                    "analysis_stage": "SCANNING",
+                    "stage_step": 0,
+                    "stage_title": "OPTICAL SENSOR SCANNING",
+                    "stage_description": "Keep road sign within aiming reticle (30-60 cm distance).",
                     "legal_reference": "Optical Road Sensor Active",
                     "risk_tier": "SCANNING",
                     "advice": "Align road sign inside reticle at 30-60 cm (1-2 ft) distance.",
@@ -496,49 +861,105 @@ class AIServiceManager:
                 "frame_dimensions": [w, h],
                 "is_detected": False,
                 "is_confirmed": False,
+                "analysis_stage": "SCANNING",
+                "stage_step": 0,
+                "stage_title": "OPTICAL SENSOR SCANNING",
+                "stage_description": "Keep road sign within aiming reticle (30-60 cm distance).",
                 "inference_time_ms": round(elapsed_ms, 1),
                 "top5_predictions": []
             }
 
-        alert = self.alert_system.process_detection(best_res["class_id"], conf)
+        cid = best_winner["class_id"]
+        cname = best_winner["name"]
+        rec = best_winner["record"]
+        conf = best_winner["composite_score"]
+        glyph_match = best_winner["glyph_match"]
+        neural_prob = best_winner["neural_prob"]
+        category = rec.get("category", "MANDATORY")
+        urgency = rec.get("urgency", "WARNING")
+
+        # 3-Stage Decision Pipeline:
+        # Stage 1: ANALYZING (candidate sighted; analyzing geometry, border color & glyph contour)
+        # Stage 2: SEARCHING_RECORDS (cross-referencing candidate with 108 Indian RTO records)
+        # Stage 3: CONFIRMED (verified match confirmed from records)
+        if conf < 0.38 or (glyph_match < 0.22 and conf < 0.48):
+            analysis_stage = "ANALYZING"
+            stage_step = 1
+            stage_title = "STAGE 1: ANALYZING SIGN VISUALS"
+            stage_desc = "Inspecting geometry, chromatic contours and glyph profile..."
+            is_confirmed = False
+        elif conf < 0.50:
+            analysis_stage = "SEARCHING_RECORDS"
+            stage_step = 2
+            stage_title = "STAGE 2: MATCHING 108 RTO RECORDS"
+            stage_desc = f"Cross-referencing candidate with official Indian RTO database: {cname}..."
+            is_confirmed = False
+        else:
+            analysis_stage = "CONFIRMED"
+            stage_step = 3
+            stage_title = "STAGE 3: RECORD VERIFIED & ACTIVE"
+            stage_desc = f"Verified statutory match: {cname} ({rec.get('sign_code', 'IRC:67')})"
+            is_confirmed = True
+
+        best_res = {
+            "class_id": cid,
+            "class_name": cname,
+            "confidence_score": conf,
+            "confidence_percentage": round(conf * 100.0, 1),
+            "margin_score": round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
+        }
+
+        alert = self.alert_system.process_detection(cid, conf)
         norm_label, norm_conf = self.adapter.normalize(best_res)
         agent_step = self.coordinator.process(norm_label, norm_conf)
 
-        # Top 5 probabilities on the chosen target crop (reusing batch output)
         top5_list = []
-        try:
-            if best_probs is not None and not use_tta:
-                top5_vals, top5_ids = torch.topk(best_probs, 5)
-            else:
-                pil_c = self.predictor._to_pil(best_sq_crop)
-                t_in = self.predictor.base_transform(pil_c).unsqueeze(0).to(self.predictor.device)
-                with torch.no_grad():
-                    probs = F.softmax(self.predictor.model(t_in), dim=1)[0]
-                top5_vals, top5_ids = torch.topk(probs, 5)
+        for item in best_top5:
+            top5_list.append({
+                "class_id": item["class_id"],
+                "class_name": item["name"],
+                "percentage": round(item["composite_score"] * 100.0, 1),
+                "glyph_match": item["glyph_match"]
+            })
 
-            for idx in range(5):
-                cid = top5_ids[idx].item()
-                val = round(top5_vals[idx].item() * 100.0, 2)
-                cname = self.predictor.class_names.get(cid, f"Class {cid}")
-                top5_list.append({"class_id": cid, "class_name": cname, "percentage": val})
-        except Exception:
-            pass
-
-        meta = GTSRB_SAFETY_METADATA.get(best_res["class_id"], {})
+        meta = GTSRB_SAFETY_METADATA.get(cid, {})
 
         primary_prediction = {
-            "sign_name": best_res["class_name"],
-            "class_id": best_res["class_id"],
+            "sign_name": cname,
+            "class_id": cid,
+            "sign_code": rec.get("sign_code", f"IRC67-#{cid:03d}"),
             "confidence": conf,
             "confidence_percentage": round(conf * 100.0, 1),
-            "margin_score": margin,
+            "glyph_match": glyph_match,
+            "margin_score": best_res["margin_score"],
             "is_detected": True,
             "is_confirmed": is_confirmed,
-            "legal_reference": meta.get("irc_code", "IRC:67-2012 Code of Practice for Road Signs"),
-            "risk_tier": meta.get("tier", "INFO"),
-            "advice": meta.get("advice", "Observe statutory road regulations."),
-            "fine_amount": meta.get("fine_amount", 500),
+            "analysis_stage": analysis_stage,
+            "stage_step": stage_step,
+            "stage_title": stage_title,
+            "stage_description": stage_desc,
+            "category": category,
+            "urgency": urgency,
+            "alert_type": "INFO" if (category == "INFORMATORY" or urgency == "INFORMATIONAL") else "ALERT",
+            "name_te": rec.get("name_te"),
+            "name_hi": rec.get("name_hi"),
+            "alert_en": rec.get("alert_en"),
+            "alert_te": rec.get("alert_te"),
+            "alert_hi": rec.get("alert_hi"),
+            "meaning_en": rec.get("meaning_en", meta.get("advice", "Observe statutory road regulations.")),
+            "meaning_te": rec.get("meaning_te"),
+            "meaning_hi": rec.get("meaning_hi"),
+            "legal_reference": rec.get("penalty_info", meta.get("irc_code", "IRC:67 Code of Practice for Road Signs")),
+            "risk_tier": urgency,
+            "advice": rec.get("meaning_en", meta.get("advice", "Observe statutory road regulations.")),
+            "fine_amount": meta.get("fine_amount", 1000),
             "mv_act_section": meta.get("mv_act_section", "Sec 177 MV Act"),
+            "image_url": rec.get("image_url", f"/signs/{cid:03d}.png"),
+            "detected_shape": (best_analysis or {}).get("shape_type", "STANDARD"),
+            "shape": (best_analysis or {}).get("shape_type", "STANDARD").replace("_", " ").title(),
+            "red_ratio": round((best_analysis or {}).get("red_ratio", 0.0), 3),
+            "blue_ratio": round((best_analysis or {}).get("blue_ratio", 0.0), 3),
+            "yellow_ratio": round((best_analysis or {}).get("yellow_ratio", 0.0), 3),
         }
 
         return {
@@ -550,6 +971,10 @@ class AIServiceManager:
             "frame_dimensions": [w, h],
             "is_detected": True,
             "is_confirmed": is_confirmed,
+            "analysis_stage": analysis_stage,
+            "stage_step": stage_step,
+            "stage_title": stage_title,
+            "stage_description": stage_desc,
             "inference_time_ms": round(elapsed_ms, 1),
             "top5_predictions": top5_list
         }

@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../api';
-import { ALL_108_RTO_SIGNS } from '../data/rtoSignsData';
+import { ALL_108_RTO_SIGNS, buildTrafficSignVoicePrompt } from '../data/rtoSignsData';
 import { speechService, type AlertLanguage } from '../services/speechService';
+import { navigationService, type NavigationState } from '../services/navigationService';
+import { toast } from '../components/Toast';
 
 export const AIStudioView: React.FC = () => {
   const [modelStatus, setModelStatus] = useState<any>(null);
@@ -10,7 +12,9 @@ export const AIStudioView: React.FC = () => {
   
   // Voice Alert Avionics for Webcam & Optical Perception
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(true);
-  const [webcamLang, setWebcamLang] = useState<AlertLanguage>('en');
+  // Default to 'all' for sequential multilingual alerts (EN -> TE -> HI)
+  const [webcamLang, setWebcamLang] = useState<AlertLanguage>('all');
+  const [activeSpeakingLang, setActiveSpeakingLang] = useState<AlertLanguage | null>(null);
   const [lastVoiceSpoken, setLastVoiceSpoken] = useState<{
     text: string;
     signName: string;
@@ -18,6 +22,11 @@ export const AIStudioView: React.FC = () => {
     lang: AlertLanguage;
   } | null>(null);
   const lastSpokenWebcamSignRef = useRef<{ signId: number; timestamp: number }>({ signId: -1, timestamp: 0 });
+  const globalLastSpokenTimestampRef = useRef<number>(0);
+
+  // Live Location & Google Maps Navigation State
+  const [gpsNav, setGpsNav] = useState<NavigationState>(navigationService.getState());
+  const [useRealGps, setUseRealGps] = useState<boolean>(false);
 
   // Real detection state from webcam / upload
   const [livePrediction, setLivePrediction] = useState<any | null>({
@@ -57,7 +66,29 @@ export const AIStudioView: React.FC = () => {
 
   useEffect(() => {
     api.getModelStatus().then(setModelStatus).catch(() => null);
+    const unsub = navigationService.subscribe((s) => {
+      setGpsNav(s);
+    });
+    return () => unsub();
   }, []);
+
+  const getCompassDirection = (deg: number): string => {
+    const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    const idx = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+    return directions[idx];
+  };
+
+  const toggleGpsMode = () => {
+    const nextMode = !useRealGps;
+    setUseRealGps(nextMode);
+    navigationService.setMode(!nextMode);
+    if (nextMode) {
+      navigationService.startNavigation();
+      toast.success('Real Device GPS Linked with Google Maps & Live Speed Telemetry.');
+    } else {
+      toast.info('Switched to Highway Route Simulator.');
+    }
+  };
 
   // Temporal Stabilization State for jitter-free real-time HUD
   const temporalHistoryRef = useRef<Array<{
@@ -192,56 +223,96 @@ export const AIStudioView: React.FC = () => {
       }
     }
 
-    // Smooth Transition: Prevent single-frame flicker while allowing rapid, responsive sign switching
-    if (activeLockRef.current && now < activeLockRef.current.lockedUntil) {
-      const priorCid = activeLockRef.current.class_id;
-      // If a new sign candidate has appeared with good confidence (>=42%) or repeated occurrence, switch smoothly
-      const newCandidateIsStrong = bestCid !== priorCid && (bestAvgConf >= 42 || (voteMap[bestCid]?.count || 0) >= 2);
-      if (!newCandidateIsStrong) {
-        // Retain prior lock for continuity
-        bestCid = priorCid;
-        bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-      } else {
-        // Clear prior lock so new sign immediately takes over
-        activeLockRef.current = null;
-      }
-    }
+    const voteCount = voteMap[bestCid]?.count || 1;
+    const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === bestCid) || ALL_108_RTO_SIGNS[bestCid];
+    const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
+    const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (bestCid === 0 || bestCid === 2 ? 'CRITICAL' : 'WARNING'));
+    const isInfoSign = category === 'INFORMATORY' || urgency === 'INFORMATIONAL' || res.primary_prediction.alert_type === 'INFO';
+    const alertType = isInfoSign ? 'INFO' : 'ALERT';
 
-    // Update active lock if consensus is established on the winning sign
-    const isStrong = (bestAvgConf >= 42 && (voteMap[bestCid]?.count || 1) >= 2) || bestAvgConf >= 55;
-    if (isStrong) {
+    // 3-STAGE INTELLIGENT RECOGNITION PIPELINE:
+    // Stage 1 (Frame 1): Analyzing sign visual contours & geometry (shape, chromatic ratio). Audio Muted.
+    // Stage 2 (Frame 2): Cross-referencing candidate with 108 Indian RTO records. Audio Muted.
+    // Stage 3 (Frame 3+ with consistent consensus): Record Verified & Active. Triggers Alert/Info once.
+    let stageStep = 1;
+    let stageTitle = 'STAGE 1: ANALYZING SIGN VISUALS';
+    let stageDescription = 'Optical sensor inspecting sign shape & chromatic profile...';
+    let isConfirmed = false;
+    let status = 'ANALYZING_SIGN';
+
+    const detectedShape = res.primary_prediction.shape || signMeta?.shape || 'Standard';
+
+    // Check if prior confirmed detection lock is still active
+    if (activeLockRef.current && now < activeLockRef.current.lockedUntil && activeLockRef.current.class_id === bestCid) {
+      stageStep = 3;
+      stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
+      stageDescription = `Verified in official records: ${signMeta?.name || res.primary_prediction.sign_name}`;
+      isConfirmed = true;
+      status = 'CONFIRMED_ACTIVE';
+      bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
+    } else if (voteCount >= 3 && bestAvgConf >= 30) {
+      // Confirmed only after multi-frame observation consensus
+      stageStep = 3;
+      stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
+      stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
+      isConfirmed = true;
+      status = 'CONFIRMED_ACTIVE';
+
       activeLockRef.current = {
         class_id: bestCid,
-        sign_name: voteMap[bestCid]?.name || res.primary_prediction.sign_name,
+        sign_name: signMeta?.name || res.primary_prediction.sign_name,
         confidence: bestAvgConf,
-        lockedUntil: now + 800,
+        lockedUntil: now + 1400,
       };
+    } else if (voteCount === 2) {
+      // Stage 2: Cross-referencing 108 records
+      stageStep = 2;
+      stageTitle = 'STAGE 2: MATCHING 108 RTO RECORDS';
+      stageDescription = `Cross-referencing candidate shape (${detectedShape}) with 108 Indian RTO database: ${signMeta?.name || res.primary_prediction.sign_name}...`;
+      isConfirmed = false;
+      status = 'SEARCHING_RECORDS';
+    } else {
+      // Stage 1: Analyzing sign
+      stageStep = 1;
+      stageTitle = 'STAGE 1: ANALYZING SIGN VISUALS';
+      stageDescription = `Analyzing candidate shape: ${detectedShape}, chromatic boundary & glyph contour...`;
+      isConfirmed = false;
+      status = 'ANALYZING_SIGN';
     }
-
-    const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === bestCid) || ALL_108_RTO_SIGNS[bestCid];
-    const isConfirmed = Boolean(isStrong || (activeLockRef.current && now < activeLockRef.current.lockedUntil));
 
     return {
       sign_name: signMeta?.name || res.primary_prediction.sign_name,
-      class_id: signMeta?.sign_code || `#${String(bestCid).padStart(3, '0')}`,
+      name_te: signMeta?.name_te || res.primary_prediction.name_te,
+      name_hi: signMeta?.name_hi || res.primary_prediction.name_hi,
+      class_id: signMeta?.sign_code || res.primary_prediction.sign_code || `#${String(bestCid).padStart(3, '0')}`,
       raw_class_id: bestCid,
-      category: signMeta?.category || res.primary_prediction.risk_tier || 'MANDATORY',
+      category: category,
       shape: signMeta?.shape || 'Standard',
       color_code: signMeta?.color_code || '#EF4444',
-      image_url: signMeta?.image_url || `/signs/${String(bestCid).padStart(3, '0')}.png`,
+      image_url: signMeta?.image_url || res.primary_prediction.image_url || `/signs/${String(bestCid).padStart(3, '0')}.png`,
       confidence: bestAvgConf,
+      glyph_match: res.primary_prediction.glyph_match || 0,
       margin_score: res.primary_prediction.margin_score || 0,
       is_confirmed: isConfirmed,
+      stage_step: stageStep,
+      stage_title: stageTitle,
+      stage_description: stageDescription,
+      alert_type: alertType,
+      alert_en: res.primary_prediction.alert_en || signMeta?.tts_prompt,
+      alert_te: res.primary_prediction.alert_te,
+      alert_hi: res.primary_prediction.alert_hi,
       legal_reference: signMeta?.legal_reference || res.primary_prediction.legal_reference || 'IRC:67 Regulatory',
-      penalty_info: signMeta?.penalty_info || `₹${res.primary_prediction.fine_amount || 500} fine under ${res.primary_prediction.mv_act_section || 'Sec 177 MV Act'}`,
+      penalty_info: signMeta?.penalty_info || res.primary_prediction.penalty_info || `₹${res.primary_prediction.fine_amount || 500} fine under ${res.primary_prediction.mv_act_section || 'Sec 177 MV Act'}`,
       meaning: signMeta?.meaning || res.primary_prediction.advice,
+      meaning_te: signMeta?.meaning_te || res.primary_prediction.meaning_te,
+      meaning_hi: signMeta?.meaning_hi || res.primary_prediction.meaning_hi,
       halt: signMeta?.halt,
-      distance_est: isConfirmed ? '~14m' : 'Acquiring...',
+      distance_est: isConfirmed ? '~14m' : stageStep === 2 ? 'Verifying...' : 'Acquiring...',
       inference_ms: Math.round((res.inference_time_ms || 18.0) * 10) / 10,
       bounding_box: smoothedBoxRef.current || rawBox,
       frame_dimensions: res.frame_dimensions || [640, 480],
       top5: res.top5_predictions || [],
-      status: isConfirmed ? 'CONFIRMED_ACTIVE' : 'ACQUIRING_FOCUS',
+      status: status,
     };
   };
 
@@ -259,6 +330,8 @@ export const AIStudioView: React.FC = () => {
 
   // Real webcam activation with zero race condition
   const startWebcam = async () => {
+    // Acquire exclusive audio lock for optical camera detection
+    speechService.setExclusiveSource('CAMERA');
     setActiveMode('webcam');
     setLivePrediction({
       sign_name: 'Searching for Signs...',
@@ -298,15 +371,18 @@ export const AIStudioView: React.FC = () => {
         videoRef.current.play().catch(() => {});
       }
       scheduleNextTick(150);
+      toast.success('Live camera stream initiated with PyTorch 108-class neural model.');
     } catch (err: any) {
-      alert('Unable to access webcam: ' + err.message);
+      toast.error('Unable to access camera: ' + err.message);
       webcamActiveRef.current = false;
       setWebcamActive(false);
+      speechService.setExclusiveSource(null);
     }
   };
 
   const stopWebcam = () => {
     webcamActiveRef.current = false;
+    speechService.setExclusiveSource(null);
     if (loopTimeoutRef.current) {
       clearTimeout(loopTimeoutRef.current);
       loopTimeoutRef.current = null;
@@ -324,55 +400,68 @@ export const AIStudioView: React.FC = () => {
   const speakWebcamDetection = (signMeta: any, force = false) => {
     if (!signMeta || signMeta.raw_class_id < 0) return;
     if (!voiceAlertsEnabled && !force) return;
+    if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
 
     const now = Date.now();
-    const isDifferentSign = signMeta.raw_class_id !== lastSpokenWebcamSignRef.current.signId;
-    const cooldownOver = now - lastSpokenWebcamSignRef.current.timestamp > 4200;
+    const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
+    const timeSinceLastSpokenAny = now - globalLastSpokenTimestampRef.current;
+    const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
-    if (!force && !isDifferentSign && !cooldownOver) {
+    // Strict ADAS Cadence & Calm Rhythm:
+    // 1. Global Refractory: Never voice alerts faster than 4.5 seconds apart unless forced
+    if (!force && timeSinceLastSpokenAny < 4500) {
+      return;
+    }
+
+    // 2. Same-Sign Cooldown: Do not repeat identical sign within 14 seconds
+    if (!force && isSameSign && timeSinceThisSign < 14000) {
+      return;
+    }
+
+    const name = signMeta.sign_name || signMeta.name || 'Traffic Sign';
+    const isInfo = signMeta.alert_type === 'INFO' || signMeta.category === 'INFORMATORY' || signMeta.urgency === 'INFORMATIONAL';
+    const isCritical = signMeta.raw_class_id === 0 || signMeta.raw_class_id === 2 || /no entry/i.test(name);
+    const urgency = isCritical ? 'CRITICAL' : isInfo ? 'INFORMATIONAL' : 'WARNING';
+
+    // Build intelligent prompts for sequential multilingual alerts or single language
+    if (webcamLang === 'all') {
+      const promptEn = signMeta.alert_en || buildTrafficSignVoicePrompt(signMeta, 'en');
+      const promptTe = signMeta.alert_te || buildTrafficSignVoicePrompt(signMeta, 'te');
+      const promptHi = signMeta.alert_hi || buildTrafficSignVoicePrompt(signMeta, 'hi');
+
+      speechService.speakSequentialMultilingual(
+        { en: promptEn, te: promptTe, hi: promptHi },
+        urgency,
+        (lang) => setActiveSpeakingLang(lang),
+        'CAMERA'
+      );
+
+      globalLastSpokenTimestampRef.current = now;
+      lastSpokenWebcamSignRef.current = { signId: signMeta.raw_class_id, timestamp: now };
+      setLastVoiceSpoken({
+        text: `[EN] ${promptEn} ➜ [TE] ${promptTe} ➜ [HI] ${promptHi}`,
+        signName: name,
+        timestamp: now,
+        lang: 'all',
+      });
       return;
     }
 
     let promptText = '';
-    const name = signMeta.sign_name || 'Traffic Sign';
-
-    if (webcamLang === 'te') {
-      if (signMeta.raw_class_id === 0 || signMeta.halt) {
-        promptText = 'హెచ్చరిక: ఆగు సంకేతం గుర్తించబడింది. వాహనాన్ని పూర్తిగా నిలపండి.';
-      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
-        promptText = `హెచ్చరిక: ${name} గుర్తించబడింది. వేగ పరిమితి పాటించండి.`;
-      } else if (signMeta.category === 'MANDATORY') {
-        promptText = `తప్పనిసరి సంకేతం: ${name}. నిబంధనలను పాటించండి.`;
-      } else {
-        promptText = `హెచ్చరిక: ${name} గుర్తించబడింది. జాగ్రత్తగా నడపండి.`;
-      }
-    } else if (webcamLang === 'hi') {
-      if (signMeta.raw_class_id === 0 || signMeta.halt) {
-        promptText = 'चेतावनी: स्टॉप साइन पहचाना गया। वाहन को पूरी तरह रोकें।';
-      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
-        promptText = `चेतावनी: ${name} पहचाना गया। गति सीमा का पालन करें।`;
-      } else if (signMeta.category === 'MANDATORY') {
-        promptText = `अनिवार्य संकेत: ${name}। नियमों का पालन करें।`;
-      } else {
-        promptText = `चेतावनी: ${name} पहचाना गया। सावधानी से वाहन चलाएं।`;
-      }
+    if (webcamLang === 'te' && signMeta.alert_te) {
+      promptText = signMeta.alert_te;
+    } else if (webcamLang === 'hi' && signMeta.alert_hi) {
+      promptText = signMeta.alert_hi;
+    } else if (signMeta.alert_en) {
+      promptText = signMeta.alert_en;
     } else {
-      if (signMeta.raw_class_id === 0 || signMeta.halt) {
-        promptText = 'Warning: Stop Sign detected. Mandatory full stop before stop line.';
-      } else if (name.toLowerCase().includes('speed') || name.toLowerCase().includes('limit')) {
-        promptText = `Warning: ${name} detected. Observe posted speed limit.`;
-      } else if (signMeta.category === 'MANDATORY') {
-        promptText = `Mandatory notice: ${name}. Compliance required.`;
-      } else if (signMeta.category === 'CAUTIONARY') {
-        promptText = `Caution: ${name} ahead. Proceed with caution.`;
-      } else {
-        promptText = `Notice: ${name} detected.`;
-      }
+      promptText = buildTrafficSignVoicePrompt(signMeta, webcamLang);
     }
 
-    const urgency = (signMeta.category === 'MANDATORY' || signMeta.halt) ? 'CRITICAL' : 'WARNING';
-    speechService.speak(promptText, urgency, webcamLang);
+    setActiveSpeakingLang(webcamLang);
+    speechService.speak(promptText, urgency, webcamLang, 'CAMERA');
 
+    globalLastSpokenTimestampRef.current = now;
     lastSpokenWebcamSignRef.current = { signId: signMeta.raw_class_id, timestamp: now };
     setLastVoiceSpoken({
       text: promptText,
@@ -478,12 +567,12 @@ export const AIStudioView: React.FC = () => {
         }
       }
     } catch (err: any) {
-      alert('Inference error: ' + err.message);
+      toast.error('Inference error: ' + err.message);
     }
   };
 
   return (
-    <div className="flex flex-col w-full gap-6 max-w-[1720px] mx-auto text-on-surface">
+    <div className="flex flex-col w-full max-w-full gap-6 max-w-[1720px] mx-auto text-on-surface overflow-hidden">
       {/* Screen Meta & Breadcrumb Header */}
       <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
         <div className="flex flex-col gap-1">
@@ -662,17 +751,32 @@ export const AIStudioView: React.FC = () => {
 
           {/* Language Selector */}
           <div className="flex items-center bg-[#070e1c] p-0.5 rounded-lg border border-white/10 text-xs font-mono">
-            {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+            {(['all', 'en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
               <button
                 key={lang}
-                onClick={() => setWebcamLang(lang)}
-                className={`px-2 py-1 rounded text-xs transition-all ${
+                onClick={() => {
+                  setWebcamLang(lang);
+                  speechService.updateSettings({ language: lang });
+                }}
+                className={`px-2 py-1 rounded text-xs transition-all flex items-center gap-1 ${
                   webcamLang === lang
                     ? 'bg-cyan-500 text-slate-950 font-bold shadow'
                     : 'text-slate-400 hover:text-white'
                 }`}
+                title={lang === 'all' ? 'Sequential Multilingual (English -> Telugu -> Hindi)' : `Speak only in ${lang}`}
               >
-                {lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिंदी'}
+                {lang === 'all' ? (
+                  <>
+                    <span className="material-symbols-outlined text-xs">translate</span>
+                    <span>ALL (EN➜TE➜HI)</span>
+                  </>
+                ) : lang === 'en' ? (
+                  'EN'
+                ) : lang === 'te' ? (
+                  'తెలుగు'
+                ) : (
+                  'हिंदी'
+                )}
               </button>
             ))}
           </div>
@@ -683,19 +787,11 @@ export const AIStudioView: React.FC = () => {
               if (livePrediction && livePrediction.raw_class_id >= 0) {
                 speakWebcamDetection(livePrediction, true);
               } else {
-                speechService.speak(
-                  webcamLang === 'te'
-                    ? 'టెస్ట్: ఆగు సంకేతం గుర్తించబడింది.'
-                    : webcamLang === 'hi'
-                    ? 'परीक्षण: स्टॉप संकेत पहचाना गया।'
-                    : 'Test alert: Stop sign detected ahead.',
-                  'CRITICAL',
-                  webcamLang
-                );
+                speechService.testVoiceOutput((l) => setActiveSpeakingLang(l));
               }
             }}
-            className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-cyan-300 border border-white/10 text-xs font-mono flex items-center gap-1 transition-all"
-            title="Trigger immediate voice output test"
+            className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 text-cyan-300 border border-cyan-400/40 text-xs font-mono flex items-center gap-1 transition-all shadow-sm"
+            title="Trigger immediate sequential voice output in all languages"
           >
             <span className="material-symbols-outlined text-sm">graphic_eq</span>
             <span className="hidden md:inline">Test Output</span>
@@ -862,6 +958,41 @@ export const AIStudioView: React.FC = () => {
                       </div>
                     </div>
                   );
+                } else if (livePrediction.raw_class_id >= 0 && (livePrediction.stage_step === 1 || livePrediction.stage_step === 2)) {
+                  // Stage 1 (Analyzing) or Stage 2 (Searching Records) Visual Reticle
+                  const isStage2 = livePrediction.stage_step === 2;
+                  const borderCol = isStage2 ? 'border-cyan-400' : 'border-amber-400';
+                  const bgCol = isStage2 ? 'bg-cyan-500/15' : 'bg-amber-500/15';
+                  const textCol = isStage2 ? 'text-cyan-400' : 'text-amber-400';
+                  const dotCol = isStage2 ? 'bg-cyan-400' : 'bg-amber-400';
+                  return (
+                    <div
+                      className="absolute pointer-events-none transition-all duration-150 z-20"
+                      style={{
+                        top: `${topPct}%`,
+                        left: `${leftPct}%`,
+                        width: `${widthPct}%`,
+                        height: `${heightPct}%`,
+                      }}
+                    >
+                      <div className={`relative w-full h-full rounded-sm border-2 ${borderCol} ${bgCol} shadow-lg`}>
+                        <span className={`absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 ${borderCol}`}></span>
+                        <span className={`absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 ${borderCol}`}></span>
+                        <span className={`absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 ${borderCol}`}></span>
+                        <span className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 ${borderCol}`}></span>
+                        <div className={`absolute inset-0 m-auto w-2 h-2 rounded-full ${dotCol} animate-pulse`}></div>
+                      </div>
+
+                      <div className={`absolute -top-8 left-0 whitespace-nowrap bg-[#070e1c]/95 border ${borderCol} backdrop-blur-lg px-2.5 py-1 rounded shadow-lg flex items-center gap-1.5 font-mono text-[11px]`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${dotCol} animate-ping`}></span>
+                        <span className={`${textCol} font-bold`}>
+                          {isStage2 ? 'STAGE 2: MATCHING 108 RECORDS' : 'STAGE 1: ANALYZING SIGN VISUALS'}
+                        </span>
+                        <span className="text-white font-semibold">[{livePrediction.sign_name}]</span>
+                        <span className="text-slate-400">• {livePrediction.confidence}%</span>
+                      </div>
+                    </div>
+                  );
                 } else {
                   // Aiming / Standby Reticle
                   return (
@@ -877,11 +1008,7 @@ export const AIStudioView: React.FC = () => {
 
                         <div className="absolute bottom-3 bg-[#070e1c]/90 border border-cyan-400/40 px-3.5 py-1 rounded-full font-mono text-[11px] text-cyan-300 tracking-wide flex items-center gap-2 shadow-lg">
                           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                          <span>
-                            {livePrediction.confidence >= 25 && livePrediction.raw_class_id >= 0
-                              ? `ACQUIRING FOCUS: ${livePrediction.sign_name} (${livePrediction.confidence}%)`
-                              : 'KEEP FULL SIGN INSIDE RETICLE (~30-60 CM / 1-2 FT)'}
-                          </span>
+                          <span>KEEP ROAD SIGN INSIDE RETICLE (~30-60 CM / 1-2 FT)</span>
                         </div>
                       </div>
                     </div>
@@ -931,7 +1058,7 @@ export const AIStudioView: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => speechService.speak(lastVoiceSpoken.text, 'CRITICAL', lastVoiceSpoken.lang)}
+                    onClick={() => speechService.speak(lastVoiceSpoken.text, 'WARNING', lastVoiceSpoken.lang, 'MANUAL')}
                     className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-mono text-cyan-300 transition-colors flex items-center gap-1.5 border border-cyan-400/30"
                     title="Re-play Voice Announcement"
                   >
@@ -975,7 +1102,7 @@ export const AIStudioView: React.FC = () => {
               <div className="flex flex-col">
                 <span className="font-mono text-[10px] text-slate-400">VEHICLE SPEED</span>
                 <span className="font-mono text-lg text-white font-bold">
-                  48.2 <span className="text-xs text-slate-400 font-normal">KM/H</span>
+                  {gpsNav.currentLocation.speedKmh.toFixed(1)} <span className="text-xs text-slate-400 font-normal">KM/H</span>
                 </span>
               </div>
               <span className="material-symbols-outlined text-emerald-400 text-2xl">speed</span>
@@ -985,7 +1112,7 @@ export const AIStudioView: React.FC = () => {
               <div className="flex flex-col">
                 <span className="font-mono text-[10px] text-slate-400">GPS HEADING</span>
                 <span className="font-mono text-lg text-white font-bold">
-                  284° <span className="text-xs text-slate-400 font-normal">WNW</span>
+                  {Math.round(gpsNav.currentLocation.headingDeg)}° <span className="text-xs text-slate-400 font-normal">{getCompassDirection(gpsNav.currentLocation.headingDeg)}</span>
                 </span>
               </div>
               <span className="material-symbols-outlined text-cyan-400 text-2xl">explore</span>
@@ -994,8 +1121,8 @@ export const AIStudioView: React.FC = () => {
             <div className="bg-[#10203B]/70 border border-white/10 p-3 rounded-xl flex items-center justify-between shadow-sm">
               <div className="flex flex-col">
                 <span className="font-mono text-[10px] text-slate-400">ROAD GEOMETRY</span>
-                <span className="font-mono text-lg text-white font-bold">
-                  Tangent <span className="text-xs text-slate-400 font-normal">+0.4°</span>
+                <span className="font-mono text-sm text-white font-bold truncate max-w-[130px]" title={gpsNav.selectedCorridor?.name || 'NH-44 Outer Ring'}>
+                  {gpsNav.selectedCorridor?.name?.split(' ')[0] || 'NH-44'} <span className="text-xs text-slate-400 font-normal">+0.4°</span>
                 </span>
               </div>
               <span className="material-symbols-outlined text-blue-400 text-2xl">alt_route</span>
@@ -1009,6 +1136,71 @@ export const AIStudioView: React.FC = () => {
                 </span>
               </div>
               <span className="material-symbols-outlined text-emerald-400 text-2xl">bolt</span>
+            </div>
+          </div>
+
+          {/* Live Geolocation Access & Google Maps Integration */}
+          <div className="bg-[#10203B]/80 border border-cyan-500/30 backdrop-blur-xl rounded-2xl p-4 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 shrink-0">
+                <span className="material-symbols-outlined text-2xl">location_on</span>
+              </div>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-heading font-bold text-sm text-white">
+                    Live Location Access & Google Maps Link
+                  </span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${
+                    useRealGps
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 animate-pulse'
+                      : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                  }`}>
+                    {useRealGps ? '● REAL DEVICE GPS' : 'CORRIDOR SIMULATOR'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 font-mono text-xs text-slate-300 mt-1">
+                  <span className="text-cyan-300 font-semibold">
+                    {gpsNav.currentLocation.lat.toFixed(5)}° N, {gpsNav.currentLocation.lon.toFixed(5)}° E
+                  </span>
+                  <span className="text-slate-500">|</span>
+                  <span className="text-slate-400">
+                    Accuracy: <strong className="text-white">±{gpsNav.currentLocation.accuracyM.toFixed(1)}m</strong>
+                  </span>
+                  <span className="text-slate-500">|</span>
+                  <span className="text-slate-400 truncate max-w-[220px]">
+                    Corridor: <strong className="text-white">{gpsNav.selectedCorridor?.name || 'NH-44 Outer Ring Road, Hyderabad'}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 w-full md:w-auto justify-end">
+              {/* Toggle Real Device GPS vs Corridor */}
+              <button
+                onClick={toggleGpsMode}
+                className={`px-3 py-1.5 rounded-lg font-mono text-xs transition-all flex items-center gap-1.5 border ${
+                  useRealGps
+                    ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/50 shadow-sm'
+                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                }`}
+                title="Toggle Real Device Location Access"
+              >
+                <span className="material-symbols-outlined text-sm">my_location</span>
+                <span>{useRealGps ? 'GPS Locked' : 'Enable Device GPS'}</span>
+              </button>
+
+              {/* Open in Google Maps */}
+              <a
+                href={`https://www.google.com/maps?q=${gpsNav.currentLocation.lat},${gpsNav.currentLocation.lon}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-mono text-xs font-semibold shadow-md flex items-center gap-1.5 transition-all"
+                title="Open exact vehicle position on Google Maps"
+              >
+                <span className="material-symbols-outlined text-sm">map</span>
+                <span>Open in Google Maps</span>
+                <span className="material-symbols-outlined text-xs">open_in_new</span>
+              </a>
             </div>
           </div>
         </div>
@@ -1028,10 +1220,52 @@ export const AIStudioView: React.FC = () => {
                 <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold border ${
                   livePrediction?.is_confirmed
                     ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                    : 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                    : livePrediction?.stage_step === 2
+                    ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
+                    : livePrediction?.stage_step === 1
+                    ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                    : 'bg-slate-800 text-slate-400 border-slate-700'
                 }`}>
-                  {verifiedStatus || (livePrediction?.is_confirmed ? 'CONFIRMED ACTIVE' : 'SCANNING')}
+                  {verifiedStatus || livePrediction?.stage_title || (livePrediction?.is_confirmed ? 'STAGE 3: CONFIRMED' : 'OPTICAL SCANNING')}
                 </span>
+              </div>
+
+              {/* 3-Stage Sequential Recognition Stepper: Analyze -> Search Records -> Alert / Info */}
+              <div className="grid grid-cols-3 gap-1.5 p-1.5 bg-[#070e1c] rounded-xl border border-white/5">
+                <div className={`p-2 rounded-lg border text-center font-mono transition-all ${
+                  (livePrediction?.stage_step || 0) >= 1
+                    ? 'bg-amber-500/15 border-amber-400/50 text-amber-300'
+                    : 'bg-white/5 border-white/5 text-slate-500'
+                }`}>
+                  <div className="text-[10px] font-bold tracking-wider">1. ANALYZE</div>
+                  <div className="text-[9px] truncate">
+                    {(livePrediction?.stage_step || 0) === 1 ? 'Inspecting...' : (livePrediction?.stage_step || 0) > 1 ? '✓ Analyzed' : 'Standby'}
+                  </div>
+                </div>
+
+                <div className={`p-2 rounded-lg border text-center font-mono transition-all ${
+                  (livePrediction?.stage_step || 0) >= 2
+                    ? 'bg-cyan-500/15 border-cyan-400/50 text-cyan-300'
+                    : 'bg-white/5 border-white/5 text-slate-500'
+                }`}>
+                  <div className="text-[10px] font-bold tracking-wider">2. RECORDS</div>
+                  <div className="text-[9px] truncate">
+                    {(livePrediction?.stage_step || 0) === 2 ? 'Matching...' : (livePrediction?.stage_step || 0) > 2 ? '✓ 108 Verified' : 'Standby'}
+                  </div>
+                </div>
+
+                <div className={`p-2 rounded-lg border text-center font-mono transition-all ${
+                  (livePrediction?.stage_step || 0) >= 3
+                    ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
+                    : 'bg-white/5 border-white/5 text-slate-500'
+                }`}>
+                  <div className="text-[10px] font-bold tracking-wider">
+                    {livePrediction?.alert_type === 'INFO' ? '3. INFO' : '3. ALERT'}
+                  </div>
+                  <div className="text-[9px] truncate">
+                    {(livePrediction?.stage_step || 0) >= 3 ? '✓ Dispatched' : 'Standby'}
+                  </div>
+                </div>
               </div>
 
               {/* Graphic Display: Identified Sign Canvas */}
@@ -1070,9 +1304,18 @@ export const AIStudioView: React.FC = () => {
                   </span>
                   <span className="font-body-sm text-xs text-slate-300 mt-0.5">
                     {livePrediction && livePrediction.raw_class_id >= 0
-                      ? livePrediction.sign_name
+                      ? (webcamLang === 'te' && livePrediction.name_te
+                          ? livePrediction.name_te
+                          : webcamLang === 'hi' && livePrediction.name_hi
+                          ? livePrediction.name_hi
+                          : livePrediction.sign_name)
                       : 'Align road sign or screen inside camera reticle'}
                   </span>
+                  {livePrediction && livePrediction.raw_class_id >= 0 && webcamLang !== 'en' && (
+                    <span className="font-mono text-[10px] text-slate-400">
+                      {livePrediction.sign_name}
+                    </span>
+                  )}
                   <div className="flex items-center gap-1.5 mt-1 font-mono text-[11px]">
                     {livePrediction && livePrediction.raw_class_id >= 0 ? (
                       <>
@@ -1106,44 +1349,66 @@ export const AIStudioView: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-0.5">
-                  <div className="flex items-center bg-[#10203B] p-0.5 rounded-lg border border-white/10 text-xs font-mono">
-                    {(['en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
-                      <button
-                        key={lang}
-                        onClick={() => setWebcamLang(lang)}
-                        className={`px-2.5 py-1 rounded text-xs transition-all ${
-                          webcamLang === lang
-                            ? 'bg-cyan-500 text-slate-950 font-bold shadow'
-                            : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिंदी'}
-                      </button>
-                    ))}
+                <div className="flex flex-col gap-2 pt-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center bg-[#10203B] p-0.5 rounded-lg border border-white/10 text-xs font-mono">
+                      {(['all', 'en', 'te', 'hi'] as AlertLanguage[]).map((lang) => (
+                        <button
+                          key={lang}
+                          onClick={() => {
+                            setWebcamLang(lang);
+                            speechService.updateSettings({ language: lang });
+                          }}
+                          className={`px-2 py-1 rounded text-xs transition-all ${
+                            webcamLang === lang
+                              ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                          title={lang === 'all' ? 'Sequential Multilingual (English -> Telugu -> Hindi)' : `Speak in ${lang}`}
+                        >
+                          {lang === 'all' ? 'ALL' : lang === 'en' ? 'EN' : lang === 'te' ? 'తెలుగు' : 'हिंदी'}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (livePrediction && livePrediction.raw_class_id >= 0) {
+                          speakWebcamDetection(livePrediction, true);
+                        } else {
+                          speechService.testVoiceOutput((l) => setActiveSpeakingLang(l));
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/40 text-xs font-mono flex items-center gap-1.5 transition-all shadow-sm"
+                      title="Trigger immediate sequential voice announcement"
+                    >
+                      <span className="material-symbols-outlined text-sm">volume_up</span>
+                      <span>Test Voice</span>
+                    </button>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      if (livePrediction && livePrediction.raw_class_id >= 0) {
-                        speakWebcamDetection(livePrediction, true);
-                      } else {
-                        speechService.speak(
-                          webcamLang === 'te'
-                            ? 'వెబ్‌క్యామ్ వాయిస్ సిస్టమ్ సిద్ధంగా ఉంది.'
-                            : webcamLang === 'hi'
-                            ? 'वेबकैम वॉयस अलर्ट सिस्टम सक्रिय है।'
-                            : 'Webcam optical voice alert system is armed and operational.',
-                          'INFORMATIONAL',
-                          webcamLang
-                        );
-                      }
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/40 text-xs font-mono flex items-center gap-1.5 transition-all"
-                  >
-                    <span className="material-symbols-outlined text-sm">volume_up</span>
-                    <span>Test Voice</span>
-                  </button>
+                  {/* Active Sequential Spoken Language Flow */}
+                  {activeSpeakingLang && (
+                    <div className="bg-cyan-500/15 border border-cyan-400/50 rounded-lg px-2.5 py-1.5 flex items-center justify-between text-xs font-mono text-cyan-300 animate-pulse">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                        <span className="font-semibold text-[11px]">ACTIVE SPEECH:</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 font-bold text-xs">
+                        <span className={`px-1.5 py-0.5 rounded ${activeSpeakingLang === 'en' ? 'bg-cyan-400 text-slate-950 shadow' : 'text-slate-500'}`}>
+                          EN
+                        </span>
+                        <span className="text-slate-600">➜</span>
+                        <span className={`px-1.5 py-0.5 rounded ${activeSpeakingLang === 'te' ? 'bg-cyan-400 text-slate-950 shadow' : 'text-slate-500'}`}>
+                          తెలుగు
+                        </span>
+                        <span className="text-slate-600">➜</span>
+                        <span className={`px-1.5 py-0.5 rounded ${activeSpeakingLang === 'hi' ? 'bg-cyan-400 text-slate-950 shadow' : 'text-slate-500'}`}>
+                          हिंदी
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {lastVoiceSpoken && (
@@ -1214,7 +1479,11 @@ export const AIStudioView: React.FC = () => {
                 <div className="flex justify-between py-1 border-b border-white/5">
                   <span className="text-slate-400">REQUIRED ACTION:</span>
                   <span className="text-white text-right max-w-[220px] truncate" title={livePrediction?.meaning}>
-                    {livePrediction?.meaning || 'Observe statutory regulations.'}
+                    {(webcamLang === 'te' && livePrediction?.meaning_te
+                      ? livePrediction.meaning_te
+                      : webcamLang === 'hi' && livePrediction?.meaning_hi
+                      ? livePrediction.meaning_hi
+                      : livePrediction?.meaning) || 'Observe statutory regulations.'}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">

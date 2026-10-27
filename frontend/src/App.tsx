@@ -12,8 +12,12 @@ import { AIStudioView } from './pages/AIStudioView';
 import { ProfileView } from './pages/ProfileView';
 import { AdminView } from './pages/AdminView';
 import { NavigationAlertsView } from './pages/NavigationAlertsView';
+import { NotFoundView } from './pages/NotFoundView';
+import { Footer } from './components/Footer';
+import { MobileBottomBar } from './components/MobileBottomBar';
+import { ToastContainer } from './components/Toast';
 import { api } from './api';
-import { Shield, Lock } from 'lucide-react';
+import { Shield, Lock, Phone, Mail, X } from 'lucide-react';
 
 // Normalizes tab aliases and strips out query parameters or sub-routes
 const normalizeTab = (raw: string): string => {
@@ -24,10 +28,12 @@ const normalizeTab = (raw: string): string => {
     .trim()
     .toLowerCase();
 
+  if (!clean || clean === '' || clean === 'home') return 'overview';
   if (clean === 'dashboard') return 'overview';
   if (clean === 'garage') return 'vehicles';
   if (clean === 'rules') return 'academy';
   if (clean === 'navigation' || clean === 'nav' || clean === 'map' || clean === 'alerts') return 'nav-alerts';
+  if (clean === '404' || clean === 'notfound') return 'notfound';
 
   const validTabs = [
     'overview',
@@ -41,7 +47,7 @@ const normalizeTab = (raw: string): string => {
     'profile',
     'landing',
   ];
-  return validTabs.includes(clean) ? clean : 'overview';
+  return validTabs.includes(clean) ? clean : 'notfound';
 };
 
 const getTabFromLocation = (): string => {
@@ -50,8 +56,13 @@ const getTabFromLocation = (): string => {
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTabState] = useState<string>(getTabFromLocation);
+  const [user, setUser] = useState<any>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>('login');
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Navigate function that pushes browser history state (enables mouse back/forward buttons!)
+  // Navigate function that pushes browser history state
   const setCurrentTab = (tab: string, pushHistory = true) => {
     const target = normalizeTab(tab);
     setCurrentTabState(target);
@@ -67,7 +78,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Listen to both popstate and hashchange events for 100% reliable back/forward navigation
+  // Listen to popstate and hashchange events for 100% reliable back/forward navigation
   useEffect(() => {
     const handleUrlNavigation = (event?: PopStateEvent | HashChangeEvent) => {
       const stateTab = (event as PopStateEvent)?.state?.tab;
@@ -76,7 +87,6 @@ export const App: React.FC = () => {
       setMobileMenuOpen(false);
     };
 
-    // Ensure initial entry exists in history state
     const initialTab = getTabFromLocation();
     if (!window.history.state?.tab) {
       window.history.replaceState({ tab: initialTab }, '', `#${initialTab}`);
@@ -91,11 +101,63 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  const [user, setUser] = useState<any>(null);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'signup'>('login');
-  const [checkingAuth, setCheckingAuth] = useState(true);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // Dynamic Document Title and Meta Description Updater (Items 5 & 6)
+  useEffect(() => {
+    const tabMetadata: Record<string, { title: string; desc: string }> = {
+      overview: {
+        title: 'Cockpit Overview & Live Telemetry | AeroVision',
+        desc: 'Real-time vehicle telemetry, CAN-bus diagnostics, safety score, and HUD road perception stream.',
+      },
+      vehicles: {
+        title: 'Vehicle Garage & Fleet Diagnostics | AeroVision',
+        desc: 'Manage family cars, EVs, commercial vehicles, PUC and insurance validity, and FASTag balances.',
+      },
+      challans: {
+        title: 'Challan Centre & Evidence Dispute | AeroVision',
+        desc: 'Track pending traffic challans across Indian states, dispute wrongful notices with dashcam video proof, and view official Parivahan payment links.',
+      },
+      academy: {
+        title: 'Traffic Rules & IRC:67 Academy | AeroVision',
+        desc: 'Comprehensive reference of 108 Indian RTO signs, statutory Motor Vehicles Act penalties, and interactive safety quizzes.',
+      },
+      'nav-alerts': {
+        title: 'Live Navigation & Voice Alerts Avionics | AeroVision',
+        desc: 'GPS route corridor navigation with advance voice warnings in English, Hindi, and Telugu for verified traffic signs and speed limits.',
+      },
+      vault: {
+        title: 'Dashcam Cloud Evidence Vault | AeroVision',
+        desc: 'Secure private cloud storage for dashcam recordings with bookmarking, timestamped safety events, and dispute exports.',
+      },
+      'ai-studio': {
+        title: 'AI Road Intelligence & HUD Stream | AeroVision',
+        desc: 'Deep neural network perception classifying 108 Indian RTO road signs with real-time bounding boxes and voice alerts.',
+      },
+      profile: {
+        title: 'Pilot Profile & Data Privacy Center | AeroVision',
+        desc: 'User identity settings, phone and email management, password updates, and GDPR/DPDP personal data export.',
+      },
+      admin: {
+        title: 'Platform Administration & Operations | AeroVision',
+        desc: 'Administrative governance, user accounts directory, PyTorch node diagnostics, and immutable audit logs.',
+      },
+      landing: {
+        title: 'AeroVision — Intelligent Road Safety & AI Cockpit',
+        desc: 'Unified road safety intelligence platform connecting vehicle garage, traffic challans, RTO learning, and dashcam AI.',
+      },
+      notfound: {
+        title: '404 Telemetry Lost — Route Not Found | AeroVision',
+        desc: 'The requested cockpit waypoint or telemetry corridor could not be located on the active grid.',
+      },
+    };
+
+    const currentMeta = tabMetadata[currentTab] || tabMetadata.notfound || tabMetadata.overview;
+    document.title = currentMeta.title;
+
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc) {
+      metaDesc.setAttribute('content', currentMeta.desc);
+    }
+  }, [currentTab]);
 
   // Check stored JWT token on mount
   useEffect(() => {
@@ -151,10 +213,10 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="bg-background-base font-body-md text-body-md text-on-surface antialiased selection:bg-blue-600 selection:text-white min-h-screen flex flex-col">
+    <div className="bg-background-base font-body-md text-body-md text-on-surface antialiased selection:bg-blue-600 selection:text-white min-h-screen flex flex-col w-full max-w-full overflow-x-hidden relative">
       {/* Dynamic Animated Ambient Background System */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        {/* Animated Cyber Road Grid (Perspective velocity effect) */}
+        {/* Animated Cyber Road Grid */}
         <div className="cyber-road-grid opacity-75"></div>
 
         {/* Floating Atmospheric Glow Orbs */}
@@ -177,41 +239,77 @@ export const App: React.FC = () => {
         onOpenAuth={() => handleOpenAuth('login')}
       />
 
-      {/* Mobile Drawer Navigation */}
+      {/* Mobile Drawer Navigation (Item 3, 17, 18, 19) */}
       {mobileMenuOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md lg:hidden flex"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md lg:hidden flex animate-in fade-in duration-200"
           onClick={() => setMobileMenuOpen(false)}
         >
           <div
-            className="w-72 h-full bg-[#101A2B] border-r border-white/10 p-4 flex flex-col justify-between"
+            className="w-80 max-w-[85vw] h-full bg-[#0d1627] border-r border-white/10 p-5 flex flex-col justify-between overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div>
+              {/* Header with Clickable Logo (Item 17) */}
               <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-cyan-400/20 text-cyan-400 flex items-center justify-center">
-                    <span className="material-symbols-outlined text-xl">shield</span>
+                <div
+                  onClick={() => {
+                    setCurrentTab(user ? 'overview' : 'landing');
+                    setMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-2.5 cursor-pointer group"
+                  title="Return to Cockpit Overview"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-cyan-500 p-0.5 flex items-center justify-center shadow-[0_0_10px_rgba(34,211,238,0.3)]">
+                    <div className="w-full h-full bg-[#070B14] rounded-[6px] flex items-center justify-center text-cyan-400">
+                      <span className="material-symbols-outlined text-lg">shield</span>
+                    </div>
                   </div>
-                  <span className="font-heading font-bold text-white text-base">AeroVision</span>
+                  <div>
+                    <span className="font-heading font-black text-white text-base tracking-tight block">
+                      AeroVision
+                    </span>
+                    <span className="font-mono text-[9px] text-cyan-400 block -mt-0.5">
+                      AI COCKPIT v2.4
+                    </span>
+                  </div>
                 </div>
                 <button
                   onClick={() => setMobileMenuOpen(false)}
-                  className="p-1 rounded text-slate-400 hover:text-white"
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white"
+                  aria-label="Close navigation drawer"
                 >
-                  <span className="material-symbols-outlined text-xl">close</span>
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <nav className="flex flex-col gap-1.5 font-body-md text-sm">
+              {/* Pilot Status Header in Mobile Drawer */}
+              {user && (
+                <div className="mb-4 p-3 rounded-xl bg-white/[0.04] border border-white/10 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center font-bold text-white text-xs shrink-0">
+                    {user.full_name ? user.full_name.charAt(0).toUpperCase() : 'U'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-bold text-white truncate">{user.full_name}</div>
+                    <div className="text-[10px] text-cyan-400 font-mono truncate">{user.email}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Complete Navigation Items */}
+              <nav className="flex flex-col gap-1 text-sm font-medium">
                 {[
-                  { id: 'overview', label: 'Overview', icon: 'grid_view' },
-                  { id: 'vehicles', label: 'My Vehicles', icon: 'directions_car' },
-                  { id: 'challans', label: 'Challan Centre', icon: 'receipt_long' },
-                  { id: 'academy', label: 'Traffic Rules Academy', icon: 'school' },
-                  { id: 'nav-alerts', label: 'Nav & Voice Alerts', icon: 'navigation' },
-                  { id: 'vault', label: 'Dashcam Vault', icon: 'videocam' },
+                  { id: 'overview', label: 'Cockpit Overview', icon: 'grid_view' },
+                  { id: 'vehicles', label: 'My Vehicles & CAN Fleet', icon: 'directions_car' },
+                  { id: 'challans', label: 'Challan & Violation Centre', icon: 'receipt_long' },
+                  { id: 'academy', label: '108 Traffic Rules Academy', icon: 'school' },
+                  { id: 'nav-alerts', label: 'Live Nav & Voice Alerts', icon: 'navigation' },
+                  { id: 'vault', label: 'Dashcam Cloud Vault', icon: 'videocam' },
                   { id: 'ai-studio', label: 'AI Road Intelligence', icon: 'smart_toy' },
+                  { id: 'profile', label: 'Pilot Profile & Security', icon: 'person' },
+                  ...(user && user.role === 'admin'
+                    ? [{ id: 'admin', label: 'Admin Operations Console', icon: 'security' }]
+                    : []),
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -219,29 +317,64 @@ export const App: React.FC = () => {
                       setCurrentTab(item.id);
                       setMobileMenuOpen(false);
                     }}
-                    className={`flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-left transition-all ${
+                    className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-left transition-all ${
                       currentTab === item.id
-                        ? 'bg-blue-600 text-white font-semibold'
+                        ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
                         : 'text-slate-300 hover:bg-white/5'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-base">{item.icon}</span>
-                    <span>{item.label}</span>
+                    <span className="material-symbols-outlined text-lg">{item.icon}</span>
+                    <span className="text-xs sm:text-sm">{item.label}</span>
                   </button>
                 ))}
               </nav>
+
+              {/* Clickable Emergency Helplines (Item 18) */}
+              <div className="mt-6 pt-4 border-t border-white/10">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block mb-2">
+                  Emergency Helplines
+                </span>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <a
+                    href="tel:112"
+                    className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 flex items-center gap-1.5 font-mono"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-red-400" />
+                    <span>112 (Police)</span>
+                  </a>
+                  <a
+                    href="tel:1033"
+                    className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-center gap-1.5 font-mono"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-amber-400" />
+                    <span>1033 (NHAI)</span>
+                  </a>
+                </div>
+              </div>
+
+              {/* Clickable Support Email (Item 19) */}
+              <div className="mt-3">
+                <a
+                  href="mailto:support@aerovision.in"
+                  className="flex items-center gap-2 p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-mono"
+                >
+                  <Mail className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="truncate">support@aerovision.in</span>
+                </a>
+              </div>
             </div>
 
-            <div className="pt-4 border-t border-white/10">
+            {/* Bottom Auth Disconnect / Sign In */}
+            <div className="pt-4 border-t border-white/10 mt-6">
               {user ? (
                 <button
                   onClick={() => {
                     handleLogout();
                     setMobileMenuOpen(false);
                   }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 rounded-lg hover:bg-red-500/10 font-mono"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-xs text-red-400 rounded-xl hover:bg-red-500/10 border border-red-500/20 font-mono font-bold"
                 >
-                  <span className="material-symbols-outlined text-sm">logout</span>
+                  <span className="material-symbols-outlined text-base">logout</span>
                   Disconnect Cockpit
                 </button>
               ) : (
@@ -250,7 +383,7 @@ export const App: React.FC = () => {
                     handleOpenAuth('login');
                     setMobileMenuOpen(false);
                   }}
-                  className="w-full py-2 rounded-lg bg-blue-600 text-white font-semibold text-xs"
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-semibold text-xs shadow-lg shadow-blue-600/30"
                 >
                   Sign In Cockpit
                 </button>
@@ -261,7 +394,7 @@ export const App: React.FC = () => {
       )}
 
       {/* Main Cockpit Layout Container (Offset by sidebar width on desktop) */}
-      <div className="lg:pl-72 flex-1 flex flex-col relative z-10">
+      <div className="lg:pl-72 flex-1 flex flex-col relative z-10 w-full max-w-full overflow-x-hidden">
         {/* Fixed Top Header */}
         <Header
           currentTab={currentTab}
@@ -272,11 +405,11 @@ export const App: React.FC = () => {
           onToggleMobileMenu={() => setMobileMenuOpen(true)}
         />
 
-        {/* Viewport Content Stage */}
-        <main className="w-full pt-16 flex-1 px-4 sm:px-6 lg:px-8 py-6">
+        {/* Viewport Content Stage (pb-20 on mobile to clear MobileBottomBar) */}
+        <main className="w-full pt-16 flex-1 px-3 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-8 max-w-full overflow-x-hidden">
           {/* Protected View Fallback for non-authenticated state */}
           {isProtectedTab && !user ? (
-            <div className="titanium-panel p-8 sm:p-12 text-center max-w-lg mx-auto my-12 shadow-2xl">
+            <div className="titanium-panel p-6 sm:p-12 text-center max-w-lg mx-auto my-12 shadow-2xl">
               <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4 text-amber-400">
                 <Lock className="w-8 h-8" />
               </div>
@@ -286,7 +419,7 @@ export const App: React.FC = () => {
               <p className="text-sm text-slate-400 mb-6">
                 You must sign in or register to access vehicle garage, challan center, dashcam cloud vault, and personalized safety records.
               </p>
-              <div className="flex items-center justify-center gap-3">
+              <div className="flex flex-wrap items-center justify-center gap-3">
                 <button
                   onClick={() => handleOpenAuth('login')}
                   className="btn-primary text-xs"
@@ -336,10 +469,28 @@ export const App: React.FC = () => {
               )}
 
               {currentTab === 'admin' && <AdminView />}
+
+              {currentTab === 'notfound' && (
+                <NotFoundView onNavigate={(tab) => setCurrentTab(tab)} />
+              )}
             </>
           )}
+
+          {/* Global Cockpit Footer (Item 7, 9, 17, 18, 19) */}
+          <Footer onNavigate={(tab) => setCurrentTab(tab)} user={user} />
         </main>
       </div>
+
+      {/* Mobile App Bottom Navigation Bar (Item 3 & 20) */}
+      <MobileBottomBar
+        currentTab={currentTab}
+        onNavigate={(tab) => setCurrentTab(tab)}
+        user={user}
+        onOpenAuth={() => handleOpenAuth('login')}
+      />
+
+      {/* Global Toast Notification Container (Item 12 & 13) */}
+      <ToastContainer />
 
       {/* Authentication Modal */}
       <AuthModal

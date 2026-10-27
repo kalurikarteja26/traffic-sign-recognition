@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import {
   User, Lock, Download, Trash2, Shield, AlertTriangle,
-  CheckCircle, Key, HardDrive
+  CheckCircle, Key, HardDrive, Phone, Mail, HelpCircle, ExternalLink
 } from 'lucide-react';
 import { api } from '../api';
+import { toast } from '../components/Toast';
 
 interface ProfileViewProps {
   user: any;
@@ -35,8 +36,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
       const updated = await api.updateProfile({ full_name: fullName, phone });
       onUserUpdated(updated);
       setProfileMsg('Profile updated successfully.');
+      toast.success('Pilot profile credentials and emergency contact synchronized.');
     } catch (err: any) {
-      alert(err.message || 'Failed to update profile.');
+      toast.error(err.message || 'Failed to update profile.');
     } finally {
       setProfileSaving(false);
     }
@@ -50,10 +52,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
     try {
       await api.changePassword({ current_password: currentPassword, new_password: newPassword });
       setPwdMsg('Password updated successfully.');
+      toast.success('Cockpit security password updated successfully.');
       setCurrentPassword('');
       setNewPassword('');
     } catch (err: any) {
       setPwdError(err.message || 'Password update failed.');
+      toast.error(err.message || 'Password update failed.');
     } finally {
       setPwdSaving(false);
     }
@@ -70,8 +74,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
       a.download = `aerovision_userdata_${user.id}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      toast.success('Machine-readable telemetry archive exported.');
     } catch (err: any) {
-      alert(err.message || 'Export failed.');
+      toast.error(err.message || 'Export failed.');
     } finally {
       setExporting(false);
     }
@@ -85,16 +90,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
     if (doubleCheck === 'DELETE') {
       try {
         await api.deleteAccount();
-        alert('Your account has been deleted.');
+        toast.info('Your AeroVision account and linked telemetry records have been purged.');
         onLogout();
       } catch (err: any) {
-        alert(err.message || 'Failed to delete account.');
+        toast.error(err.message || 'Failed to delete account.');
       }
     }
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="space-y-6 max-w-4xl mx-auto w-full max-w-full overflow-hidden">
       {/* Header Bar */}
       <div className="titanium-panel p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
@@ -136,9 +141,20 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
                 type="email"
                 disabled
                 value={user.email}
-                className="input-titanium opacity-60 cursor-not-allowed text-xs"
+                className="input-titanium opacity-60 cursor-not-allowed text-xs font-mono"
               />
-              <p className="text-[10px] text-slate-500 mt-1">Email is verified and cannot be changed.</p>
+              {/* Clickable Email (Item 19) */}
+              <div className="mt-1 flex items-center justify-between">
+                <span className="text-[10px] text-slate-500">Verified pilot email</span>
+                <a
+                  href={`mailto:${user.email}`}
+                  className="text-[11px] text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 font-mono"
+                  title="Compose email to this address"
+                >
+                  <Mail className="w-3 h-3" />
+                  <span>Send Mail →</span>
+                </a>
+              </div>
             </div>
 
             <div>
@@ -148,6 +164,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
                 required
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
+                placeholder="e.g. Vikramaditya Sharma"
                 className="input-titanium text-sm"
               />
             </div>
@@ -159,12 +176,26 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="+91 98765 43210"
-                className="input-titanium text-sm"
+                className="input-titanium text-sm font-mono"
               />
+              {/* Clickable Phone Number (Item 18) */}
+              {phone && (
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">Direct dialing enabled</span>
+                  <a
+                    href={`tel:${phone.replace(/\s+/g, '')}`}
+                    className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline flex items-center gap-1 font-mono"
+                    title="Dial this phone number"
+                  >
+                    <Phone className="w-3 h-3" />
+                    <span>Call Pilot ({phone}) →</span>
+                  </a>
+                </div>
+              )}
             </div>
 
             <button type="submit" disabled={profileSaving} className="btn-primary text-xs py-2 px-4">
-              {profileSaving ? 'Saving...' : 'Save Profile Changes'}
+              {profileSaving ? 'Saving Changes...' : 'Save Profile Changes'}
             </button>
           </form>
         </div>
@@ -220,6 +251,59 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onUserUpdated, o
               {pwdSaving ? 'Updating...' : 'Update Password'}
             </button>
           </form>
+        </div>
+      </div>
+
+      {/* Quick Emergency Helplines Card (Item 18 & 19) */}
+      <div className="titanium-panel p-6 space-y-4">
+        <div className="flex items-center gap-2 text-white font-heading font-bold text-base">
+          <Phone className="w-5 h-5 text-red-400" />
+          <span>Indian Road Safety & Emergency Assistance</span>
+        </div>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Statutory direct links to national road safety hotlines, highway rescue dispatch, and traffic grievance departments.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-2">
+          <a
+            href="tel:112"
+            className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 transition-all flex flex-col gap-1 group"
+          >
+            <span className="text-[10px] text-red-300 uppercase font-mono font-bold">National Police/Ambulance</span>
+            <span className="text-lg font-mono font-black text-white group-hover:text-red-300 flex items-center gap-1.5">
+              <Phone className="w-4 h-4 text-red-400" /> 112
+            </span>
+          </a>
+
+          <a
+            href="tel:1033"
+            className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 transition-all flex flex-col gap-1 group"
+          >
+            <span className="text-[10px] text-amber-300 uppercase font-mono font-bold">NHAI Highway Roadside</span>
+            <span className="text-lg font-mono font-black text-white group-hover:text-amber-300 flex items-center gap-1.5">
+              <Phone className="w-4 h-4 text-amber-400" /> 1033
+            </span>
+          </a>
+
+          <a
+            href="tel:1095"
+            className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 hover:bg-blue-500/20 transition-all flex flex-col gap-1 group"
+          >
+            <span className="text-[10px] text-blue-300 uppercase font-mono font-bold">Traffic Police Desk</span>
+            <span className="text-lg font-mono font-black text-white group-hover:text-blue-300 flex items-center gap-1.5">
+              <Phone className="w-4 h-4 text-blue-400" /> 1095
+            </span>
+          </a>
+
+          <a
+            href="tel:+9118002081033"
+            className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20 transition-all flex flex-col gap-1 group"
+          >
+            <span className="text-[10px] text-cyan-300 uppercase font-mono font-bold">AeroVision Cockpit Desk</span>
+            <span className="text-sm font-mono font-black text-white group-hover:text-cyan-300 flex items-center gap-1.5 truncate">
+              <Phone className="w-4 h-4 text-cyan-400 shrink-0" /> 1800-208-1033
+            </span>
+          </a>
         </div>
       </div>
 

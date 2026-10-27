@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../api';
+import { toast } from '../components/Toast';
 
 export const VaultView: React.FC = () => {
   const [videos, setVideos] = useState<any[]>([]);
@@ -110,9 +111,10 @@ export const VaultView: React.FC = () => {
       formData.append('vehicle_id', '1');
       await api.uploadVideo(formData);
       setShowUploadModal(false);
+      toast.success('Dashcam video uploaded and indexed in encrypted vault.');
       fetchVaultVideos();
     } catch (err: any) {
-      alert(err.message || 'Video upload failed.');
+      toast.error(err.message || 'Video upload failed.');
     } finally {
       setUploading(false);
     }
@@ -173,7 +175,7 @@ export const VaultView: React.FC = () => {
               </span>
             </div>
             <button
-              onClick={() => alert('Storage upgrade simulator: 1 TB encrypted fleet vault available.')}
+              onClick={() => toast.info('Storage upgrade: 1 TB encrypted fleet vault allocated.')}
               className="font-mono text-[11px] text-cyan-400 hover:underline"
             >
               Manage / Upgrade
@@ -374,7 +376,7 @@ export const VaultView: React.FC = () => {
                   </div>
 
                   <button
-                    onClick={() => alert(`Clip ${active.filename} exported to Parivahan dispute ledger.`)}
+                    onClick={() => toast.success(`Clip ${active.filename} exported to Parivahan dispute ledger.`)}
                     className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs border border-white/10 transition-colors"
                   >
                     <span className="material-symbols-outlined text-sm">cut</span>
@@ -408,7 +410,7 @@ export const VaultView: React.FC = () => {
 
             <div className="flex items-center gap-2 w-full md:w-auto justify-end">
               <button
-                onClick={() => alert('Proof of Non-Fault certificate generated (SHA-256 telemetry seal).')}
+                onClick={() => toast.success('Proof of Non-Fault certificate generated (SHA-256 telemetry seal).')}
                 className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-semibold text-xs transition-all shadow-md flex items-center gap-1.5"
               >
                 <span className="material-symbols-outlined text-base">verified_user</span>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
+import { toast } from '../components/Toast';
 
 export interface RegionPreset {
   id: string;
@@ -370,9 +371,10 @@ export const ChallanView: React.FC = () => {
         notes: newNotice.location,
       });
       setShowAddModal(false);
+      toast.success(`Challan notice #${newNotice.challan_number || 'manual'} recorded in ledger.`);
       fetchData();
     } catch (err: any) {
-      alert(err.message || 'Failed to add manual notice.');
+      toast.error(err.message || 'Failed to add manual notice.');
     }
   };
 
@@ -384,9 +386,10 @@ export const ChallanView: React.FC = () => {
         payment_reference: 'MORTH_UPI_' + Math.random().toString(36).substring(2, 9).toUpperCase(),
         payment_mode: 'UPI_FASTAG',
       });
+      toast.success(`Payment settled for ₹${challan.amount}. Verification receipt generated.`);
       fetchData();
     } catch (err: any) {
-      alert(err.message || 'Payment simulation failed.');
+      toast.error(err.message || 'Payment simulation failed.');
     }
   };
 
@@ -399,9 +402,10 @@ export const ChallanView: React.FC = () => {
         user_notes: 'Cross-verified with dashcam video telemetry timestamp.',
       });
       setDisputeModalOpen(false);
+      toast.success('Dispute draft filed with dashcam video proof hash attached.');
       fetchData();
     } catch (err: any) {
-      alert(err.message || 'Failed to submit dispute.');
+      toast.error(err.message || 'Failed to submit dispute.');
     } finally {
       setSubmittingDispute(false);
     }
@@ -450,7 +454,7 @@ export const ChallanView: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col w-full gap-6 text-on-surface">
+    <div className="flex flex-col w-full max-w-full gap-6 text-on-surface overflow-hidden">
       {/* Header Banner & Quick Telemetry Metrics */}
       <div className="flex flex-col xl:flex-row items-start xl:items-end justify-between gap-4">
         <div className="flex flex-col gap-1">
@@ -590,8 +594,15 @@ export const ChallanView: React.FC = () => {
                 <span className="font-mono text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                   {currentRegionMeta.name.toUpperCase()} REGIONAL AUTHORITY
                 </span>
-                <span className="font-mono text-[11px] text-slate-400">
-                  Helpline: {currentRegionMeta.helpline || '100 / 040-27852482'}
+                <span className="font-mono text-[11px] text-slate-400 flex items-center gap-1">
+                  Helpline:{' '}
+                  <a
+                    href={`tel:${(currentRegionMeta.helpline || '100').split('/')[0].trim().replace(/[^\d+]/g, '')}`}
+                    className="text-cyan-400 hover:underline hover:text-cyan-300 font-bold"
+                    title="Call Regional Traffic Helpline"
+                  >
+                    {currentRegionMeta.helpline || '100 / 040-27852482'}
+                  </a>
                 </span>
               </div>
               <h2 className="font-heading font-bold text-lg sm:text-xl text-white mt-1">

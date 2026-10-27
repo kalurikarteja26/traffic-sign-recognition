@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
+import { toast } from '../components/Toast';
 
 export const GarageView: React.FC = () => {
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -42,8 +43,9 @@ export const GarageView: React.FC = () => {
   const handleCreateVehicle = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const regClean = formData.registration_number.toUpperCase().trim();
       await api.createVehicle({
-        reg_number: formData.registration_number.toUpperCase().trim(),
+        reg_number: regClean,
         make_model: `${formData.make} ${formData.model}`.trim(),
         nickname: `${formData.make} ${formData.model}`.trim(),
         vehicle_type: formData.vehicle_type || '4-Wheeler Car',
@@ -64,9 +66,10 @@ export const GarageView: React.FC = () => {
         vehicle_type: '4-Wheeler Car',
         fastag_balance: 1500,
       });
+      toast.success(`Vehicle node ${regClean} successfully enrolled into CAN telemetry garage!`);
       await fetchVehicles();
     } catch (err: any) {
-      alert(err.message || 'Failed to enrol vehicle node.');
+      toast.error(err.message || 'Failed to enrol vehicle node.');
     }
   };
 
@@ -148,7 +151,7 @@ export const GarageView: React.FC = () => {
         {/* Action Group */}
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => alert(`OTA Telemetry Diagnostics Broadcast: All ${normalizedVehicles.length || 4} vehicle nodes ACK (200 OK)`)}
+            onClick={() => toast.info(`OTA Telemetry Diagnostics Broadcast: All ${normalizedVehicles.length || 4} vehicle nodes ACK (200 OK)`)}
             className="px-3.5 py-2 rounded-lg bg-[#10203B]/80 hover:bg-[#162B4D] text-slate-200 hover:text-cyan-400 transition-all flex items-center gap-2 border border-white/10 shadow-md font-mono text-xs cursor-pointer active:scale-95"
           >
             <span className="material-symbols-outlined text-base text-cyan-400">cell_tower</span>
@@ -551,7 +554,7 @@ export const GarageView: React.FC = () => {
                 <div className="pt-4 border-t border-white/5 flex items-center justify-between mt-3">
                   <span className="font-mono text-xs text-slate-400">Velocity: {v.speed} km/h</span>
                   <button
-                    onClick={() => alert(`Diagnostics telemetry exported for ${v.reg_number} (${v.make_model}). Status: ISO-14229 Nominal.`)}
+                    onClick={() => toast.success(`Diagnostics telemetry exported for ${v.reg_number} (${v.make_model}). Status: ISO-14229 Nominal.`)}
                     className="px-3 py-1 rounded bg-[#162B4D] hover:bg-white/10 text-cyan-300 text-xs font-mono border border-white/10 cursor-pointer transition-colors"
                   >
                     Export DTC Audit

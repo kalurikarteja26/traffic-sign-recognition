@@ -1,7 +1,9 @@
 // frontend/src/services/speechService.ts
 // Robust, Queue-Managed Text-to-Speech Engine with Multi-Language Support (EN / TE / HI)
+// Zero-overlap audio lock, natural ADAS rhythm & cadence, and authentic native streaming support
 
-export type AlertLanguage = 'en' | 'te' | 'hi';
+export type AlertLanguage = 'en' | 'te' | 'hi' | 'all';
+export type AlertSource = 'CAMERA' | 'NAVIGATION' | 'MANUAL' | 'SYSTEM';
 
 export interface SpeechSettings {
   enabled: boolean;
@@ -9,16 +11,45 @@ export interface SpeechSettings {
   volume: number; // 0.0 to 1.0
   rate: number;   // 0.8 to 1.3
   pitch: number;  // 0.9 to 1.1
+  chimeEnabled: boolean;
 }
 
 export interface SpeechEvent {
   text: string;
   urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL';
   language?: AlertLanguage;
+  source?: AlertSource;
   timestamp: number;
 }
 
 type VisualFallbackCallback = (message: string, isError: boolean) => void;
+
+// Transliteration lookup table for offline phonetic fallback
+const PHONETIC_MAP: Record<string, string> = {
+  // Telugu phrases
+  'హెచ్చరిక: ఆగు సంకేతం గుర్తించబడింది. వాహనాన్ని పూర్తిగా నిలపండి.':
+    'Hechcharika! Stop sign gurthinchabadindi. Vaahanaanni poorthigaa nilapandi.',
+  'హెచ్చరిక: వేగ పరిమితి పాటించండి.':
+    'Hechcharika! Vega parimithi paatinchandi.',
+  'తప్పనిసరి సంకేతం: నిబంధనలను పాటించండి.':
+    'Thappanisari sanketham. Nibandhanalanu paatinchandi.',
+  'హెచ్చరిక: జాగ్రత్తగా నడపండి.':
+    'Hechcharika! Jaagraththagaa nadapandi.',
+  'ఏరోవిజన్ రక్షణ వ్యవస్థ యాక్టివ్‌గా ఉంది. ముందు పాఠశాల ప్రాంతం. వేగాన్ని తగ్గించండి.':
+    'AeroVision rakshana vyavastha active gaa undi. Mundu paatashaala praantham. Veganni thagginchandi.',
+
+  // Hindi phrases
+  'चेतावनी: स्टॉप साइन पहचाना गया। वाहन को पूरी तरह रोकें।':
+    'Chetaavani! Stop sign pehchaana gaya. Vaahan ko poori tarah rokein.',
+  'चेतावनी: गति सीमा का पालन करें।':
+    'Chetaavani! Gati seema ka paalan karein.',
+  'अनिवार्य संकेत: नियमों का पालन करें।':
+    'Anivaarya sanket. Niyamon ka paalan karein.',
+  'चेतावनी: सावधानी से वाहन चलाएं।':
+    'Chetaavani! Saavdhani se vaahan chalaayein.',
+  'एरोविज़न सुरक्षा प्रणाली सक्रिय है. आगे गति सीमा चालीस किलोमीटर प्रति घंटा है. सावधानी से चलाएं.':
+    'AeroVision suraksha pranali sakriya hai. Aage gati seema chaalis kilometer prati ghanta hai. Saavdhani se chalaayein.',
+};
 
 class SpeechService {
   private settings: SpeechSettings = {
@@ -27,9 +58,12 @@ class SpeechService {
     volume: 1.0,
     rate: 1.0,
     pitch: 1.0,
+    chimeEnabled: true,
   };
 
   private synth: SpeechSynthesis | null = null;
+  private currentAudio: HTMLAudioElement | null = null;
+  private currentSessionId = 0;
   private isSpeaking = false;
   private queue: SpeechEvent[] = [];
   private currentUtterance: SpeechSynthesisUtterance | null = null;
@@ -37,6 +71,9 @@ class SpeechService {
   private availableVoices: SpeechSynthesisVoice[] = [];
   private lastSpokenText = '';
   private lastSpokenTimestamp = 0;
+  private audioCtx: AudioContext | null = null;
+  private exclusiveSource: AlertSource | null = null;
+  private processingTimeout: any = null;
 
   constructor() {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -67,7 +104,7 @@ class SpeechService {
   }
 
   public isSupported(): boolean {
-    return this.synth !== null;
+    return this.synth !== null || typeof Audio !== 'undefined';
   }
 
   public getSettings(): SpeechSettings {
@@ -81,6 +118,22 @@ class SpeechService {
     } catch {
       // Ignore
     }
+  }
+
+  public setLanguage(lang: AlertLanguage) {
+    this.updateSettings({ language: lang });
+  }
+
+  /**
+   * Set exclusive source lock (e.g. 'CAMERA' when live camera detection is active).
+   * Background simulated alerts from other sources will be politely suppressed.
+   */
+  public setExclusiveSource(source: AlertSource | null) {
+    this.exclusiveSource = source;
+  }
+
+  public getExclusiveSource(): AlertSource | null {
+    return this.exclusiveSource;
   }
 
   public onVisualFallback(cb: VisualFallbackCallback) {
@@ -102,46 +155,137 @@ class SpeechService {
     return { text: this.lastSpokenText, timestamp: this.lastSpokenTimestamp };
   }
 
+  /**
+   * Play a subtle acoustic pre-alert tone (dual harmonic sine tone) for rhythmic ADAS pacing.
+   */
+  private playPreAlertChime(): Promise<void> {
+    if (!this.settings.chimeEnabled || typeof window === 'undefined') {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      try {
+        const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtxClass) {
+          resolve();
+          return;
+        }
+        if (!this.audioCtx || this.audioCtx.state === 'closed') {
+          this.audioCtx = new AudioCtxClass();
+        }
+        if (this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
+        }
+
+        const now = this.audioCtx.currentTime;
+        const osc1 = this.audioCtx.createOscillator();
+        const osc2 = this.audioCtx.createOscillator();
+        const gain = this.audioCtx.createGain();
+
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(523.25, now); // C5
+        osc1.frequency.exponentialRampToValueAtTime(659.25, now + 0.08); // E5
+
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(659.25, now);
+        osc2.frequency.exponentialRampToValueAtTime(783.99, now + 0.08); // G5
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.exponentialRampToValueAtTime(0.08 * this.settings.volume, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(this.audioCtx.destination);
+
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 0.13);
+        osc2.stop(now + 0.13);
+
+        setTimeout(() => resolve(), 130);
+      } catch {
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Checks whether the current operating system/browser provides a native TTS voice for the language.
+   */
+  public hasNativeVoiceFor(lang: AlertLanguage): boolean {
+    if (!this.synth) return false;
+    if (!this.availableVoices.length) {
+      this.loadVoices();
+    }
+    const prefix = lang === 'te' ? 'te' : lang === 'hi' ? 'hi' : 'en';
+    return this.availableVoices.some((v) => v.lang.toLowerCase().startsWith(prefix));
+  }
+
+  /**
+   * Full, clean stop with zero race conditions.
+   * Increments currentSessionId to invalidate any in-flight promises and prevent overlapping speech synthesis.
+   */
   public stop() {
+    this.currentSessionId++;
     this.queue = [];
+
+    if (this.processingTimeout) {
+      clearTimeout(this.processingTimeout);
+      this.processingTimeout = null;
+    }
+
+    if (this.currentAudio) {
+      try {
+        (this.currentAudio as any).__isAborted = true;
+        this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
+        this.currentAudio.src = '';
+      } catch (e) {
+        console.error('[SpeechService] Audio stop failed:', e);
+      }
+      this.currentAudio = null;
+    }
+
     if (this.synth) {
       try {
         this.synth.cancel();
       } catch (e) {
-        console.error('[SpeechService] Cancel failed:', e);
+        console.error('[SpeechService] Synth cancel failed:', e);
       }
     }
+
     this.isSpeaking = false;
     this.currentUtterance = null;
   }
 
   /**
-   * Speak an alert with priority-aware queueing:
-   * CRITICAL interrupts lower priority and speaks immediately.
-   * Duplicate within 4 seconds is suppressed.
+   * Speak an alert with priority-aware queueing, source exclusivity, and calm ADAS rhythm.
    */
   public speak(
     text: string,
     urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL' = 'INFORMATIONAL',
-    languageOverride?: AlertLanguage
+    languageOverride?: AlertLanguage,
+    source: AlertSource = 'SYSTEM'
   ) {
     if (!text || text.trim() === '') return;
 
-    // Check duplicate speech in short succession
-    const now = Date.now();
-    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 4000) {
+    // Source exclusivity: if exclusiveSource is set (e.g. CAMERA), suppress background NAVIGATION alerts
+    if (this.exclusiveSource && source !== this.exclusiveSource && source !== 'MANUAL' && urgency !== 'CRITICAL') {
       return;
     }
 
-    // Always deliver to visual notification banner
+    const now = Date.now();
+
+    // Rhythmic Cadence Guard:
+    // If the identical alert was spoken within 12 seconds, suppress it to prevent nagging.
+    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 12000) {
+      return;
+    }
+
+    // Always deliver to visual notification banner for driver awareness
     this.notifyVisual(text, !this.settings.enabled);
 
     if (!this.settings.enabled) {
-      return;
-    }
-
-    if (!this.synth) {
-      this.notifyVisual(`[AUDIO UNAVAILABLE] ${text}`, true);
       return;
     }
 
@@ -149,34 +293,43 @@ class SpeechService {
       text,
       urgency,
       language: languageOverride || this.settings.language,
+      source,
       timestamp: now,
     };
 
     if (urgency === 'CRITICAL') {
-      // Preempt any pending or low-priority speech
+      // True emergency: Stop current audio, clear lower-urgency queue, and play immediately
       this.stop();
       this.enqueueAndProcess(event);
     } else {
-      // If currently speaking a critical alert, don't interrupt
-      if (this.isSpeaking && this.currentUtterance && this.queue.some(q => q.urgency === 'CRITICAL')) {
-        this.queue.push(event);
-      } else {
-        this.enqueueAndProcess(event);
-      }
+      // For warning / informational, queue politely without cutting off in-flight audio
+      this.enqueueAndProcess(event);
     }
   }
 
   private enqueueAndProcess(event: SpeechEvent) {
+    // Drop duplicates in queue
+    if (this.queue.some((q) => q.text === event.text)) {
+      return;
+    }
+
+    // Limit queue size to avoid alert backlog
+    if (this.queue.length >= 3) {
+      this.queue.shift();
+    }
+
     this.queue.push(event);
+
     if (!this.isSpeaking) {
       this.processNextInQueue();
     }
   }
 
-  private processNextInQueue() {
-    if (!this.synth || this.queue.length === 0) {
+  private async processNextInQueue() {
+    if (this.queue.length === 0) {
       this.isSpeaking = false;
       this.currentUtterance = null;
+      this.currentAudio = null;
       return;
     }
 
@@ -193,44 +346,210 @@ class SpeechService {
     this.lastSpokenText = event.text;
     this.lastSpokenTimestamp = event.timestamp;
 
+    const targetLang = event.language || this.settings.language;
+    const hasNative = this.hasNativeVoiceFor(targetLang);
+
+    // Play subtle ADAS chime before spoken prompt
+    await this.playPreAlertChime();
+
+    // Check if stopped during chime
+    if (!this.isSpeaking) return;
+
+    // Use backend authentic voice generation for Telugu & Hindi when browser lacks a native system voice
+    if ((targetLang === 'te' || targetLang === 'hi') && !hasNative) {
+      this.playStreamingAudio(event, targetLang);
+    } else {
+      this.playUtterance(event, targetLang);
+    }
+  }
+
+  /**
+   * Plays authentic high-definition audio generated via backend /api/ai/tts endpoint.
+   * Completely immune to AbortError overlaps and multiple parallel streams.
+   */
+  private playStreamingAudio(event: SpeechEvent, lang: AlertLanguage) {
+    const sessionId = ++this.currentSessionId;
+
+    // Ensure speech synthesis is completely silent
+    if (this.synth) {
+      try {
+        this.synth.cancel();
+      } catch (_) {}
+    }
+
+    try {
+      const audioUrl = `/api/ai/tts?text=${encodeURIComponent(event.text)}&lang=${lang}`;
+      const audio = new Audio(audioUrl);
+      audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
+      audio.playbackRate = Math.max(0.7, Math.min(1.3, this.settings.rate));
+
+      this.currentAudio = audio;
+
+      audio.onended = () => {
+        if (this.currentSessionId !== sessionId) return;
+        this.isSpeaking = false;
+        this.currentAudio = null;
+        // Calm rhythm: 650ms breathing pause before processing next queue item
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+      };
+
+      audio.onerror = (e) => {
+        if (this.currentSessionId !== sessionId || (audio as any).__isAborted) return;
+        console.warn('[SpeechService] Streaming audio failed, falling back to phonetic TTS:', e);
+        this.currentAudio = null;
+        this.playPhoneticFallback(event, lang, sessionId);
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          // If playback was aborted intentionally by stop() or new alert, IGNORE it!
+          if (
+            this.currentSessionId !== sessionId ||
+            (audio as any).__isAborted ||
+            err.name === 'AbortError'
+          ) {
+            return;
+          }
+          console.warn('[SpeechService] Audio play error (e.g. autoplay restriction):', err);
+          this.currentAudio = null;
+          this.playPhoneticFallback(event, lang, sessionId);
+        });
+      }
+    } catch (err) {
+      if (this.currentSessionId !== sessionId) return;
+      console.warn('[SpeechService] Exception during audio stream:', err);
+      this.playPhoneticFallback(event, lang, sessionId);
+    }
+  }
+
+  /**
+   * Plays speech using browser's native SpeechSynthesisUtterance.
+   */
+  private playUtterance(event: SpeechEvent, lang: AlertLanguage) {
+    const sessionId = ++this.currentSessionId;
+
+    // Ensure audio element is completely stopped
+    if (this.currentAudio) {
+      try {
+        (this.currentAudio as any).__isAborted = true;
+        this.currentAudio.pause();
+        this.currentAudio = null;
+      } catch (_) {}
+    }
+
+    if (!this.synth) {
+      this.notifyVisual(`[AUDIO UNAVAILABLE] ${event.text}`, true);
+      this.isSpeaking = false;
+      this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+      return;
+    }
+
     try {
       const utterance = new SpeechSynthesisUtterance(event.text);
       utterance.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
       utterance.rate = Math.max(0.7, Math.min(1.3, this.settings.rate));
       utterance.pitch = Math.max(0.8, Math.min(1.2, this.settings.pitch));
 
-      const langCode = this.getLanguageCode(event.language || this.settings.language);
+      const langCode = this.getLanguageCode(lang);
       utterance.lang = langCode;
 
-      // Select voice matching language if available
       const voice = this.selectVoiceForLanguage(langCode);
       if (voice) {
         utterance.voice = voice;
       }
 
       utterance.onend = () => {
+        if (this.currentSessionId !== sessionId) return;
         this.isSpeaking = false;
         this.currentUtterance = null;
-        // Small 300ms pause between queued utterances for natural pacing
-        setTimeout(() => this.processNextInQueue(), 300);
+        // Calm rhythm: 650ms breathing pause before processing next queue item
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
       };
 
       utterance.onerror = (e) => {
+        if (this.currentSessionId !== sessionId) return;
         console.warn('[SpeechService] Synthesis error:', e.error);
         this.isSpeaking = false;
         this.currentUtterance = null;
         this.notifyVisual(`[SPEECH PLAYBACK ERROR: ${e.error}] ${event.text}`, true);
-        setTimeout(() => this.processNextInQueue(), 200);
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 400);
       };
 
       this.currentUtterance = utterance;
       this.synth.speak(utterance);
     } catch (err) {
+      if (this.currentSessionId !== sessionId) return;
       console.error('[SpeechService] Utterance failed:', err);
       this.isSpeaking = false;
       this.currentUtterance = null;
       this.notifyVisual(`[SPEECH FAILED] ${event.text}`, true);
-      this.processNextInQueue();
+      this.processingTimeout = setTimeout(() => this.processNextInQueue(), 400);
+    }
+  }
+
+  /**
+   * Emergency fallback for offline environments without regional voices.
+   */
+  private playPhoneticFallback(event: SpeechEvent, lang: AlertLanguage, sessionId: number) {
+    if (this.currentSessionId !== sessionId) return;
+
+    const rawText = event.text;
+    let phoneticText = PHONETIC_MAP[rawText];
+
+    if (!phoneticText) {
+      if (lang === 'te') {
+        phoneticText = rawText
+          .replace(/హెచ్చరిక/g, 'Hechcharika')
+          .replace(/సంకేతం/g, 'sanketham')
+          .replace(/గుర్తించబడింది/g, 'gurthinchabadindi')
+          .replace(/నిబంధనలను పాటించండి/g, 'nibandhanalanu paatinchandi')
+          .replace(/వేగ పరిమితి/g, 'vega parimithi')
+          .replace(/జాగ్రత్తగా నడపండి/g, 'jaagraththaga nadapandi');
+      } else if (lang === 'hi') {
+        phoneticText = rawText
+          .replace(/चेतावनी/g, 'Chetaavani')
+          .replace(/पहचाना गया/g, 'pehchaana gaya')
+          .replace(/नियमों का पालन करें/g, 'niyamon ka paalan karein')
+          .replace(/गति सीमा/g, 'gati seema')
+          .replace(/सावधानी से चलाएं/g, 'saavdhani se chalaayein');
+      } else {
+        phoneticText = rawText;
+      }
+    }
+
+    if (!this.synth) {
+      this.isSpeaking = false;
+      this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+      return;
+    }
+
+    try {
+      const utterance = new SpeechSynthesisUtterance(phoneticText);
+      utterance.volume = this.settings.volume;
+      utterance.rate = 0.9;
+      utterance.lang = 'en-IN';
+
+      utterance.onend = () => {
+        if (this.currentSessionId !== sessionId) return;
+        this.isSpeaking = false;
+        this.currentUtterance = null;
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+      };
+
+      utterance.onerror = () => {
+        if (this.currentSessionId !== sessionId) return;
+        this.isSpeaking = false;
+        this.currentUtterance = null;
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 400);
+      };
+
+      this.currentUtterance = utterance;
+      this.synth.speak(utterance);
+    } catch {
+      if (this.currentSessionId !== sessionId) return;
+      this.isSpeaking = false;
+      this.processingTimeout = setTimeout(() => this.processNextInQueue(), 400);
     }
   }
 
@@ -250,31 +569,245 @@ class SpeechService {
     if (!this.availableVoices.length) {
       this.loadVoices();
     }
-    // Try exact match e.g. en-IN or te-IN
     const exact = this.availableVoices.find((v) => v.lang.toLowerCase() === langCode.toLowerCase());
     if (exact) return exact;
 
-    // Try language prefix match e.g. te or hi or en
     const prefix = langCode.split('-')[0].toLowerCase();
     const partial = this.availableVoices.find((v) => v.lang.toLowerCase().startsWith(prefix));
     if (partial) return partial;
 
-    // Default fallback
-    return this.availableVoices[0] || null;
+    if (prefix === 'en') {
+      const enVoice = this.availableVoices.find((v) => v.lang.toLowerCase().startsWith('en'));
+      if (enVoice) return enVoice;
+      return this.availableVoices[0] || null;
+    }
+
+    return null;
   }
 
   /**
-   * Test current voice settings with an immediate spoken phrase.
+   * Sequential Multilingual Speech Announcer:
+   * Chains English -> pause(450ms) -> Telugu -> pause(450ms) -> Hindi.
+   * Completely asynchronous, clean, non-overlapping with dynamic language state callbacks.
    */
-  public testVoiceOutput() {
+  public async speakSequentialMultilingual(
+    prompts: { en: string; te?: string; hi?: string },
+    urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL' = 'WARNING',
+    onLangChange?: (lang: AlertLanguage | null) => void,
+    source: AlertSource = 'CAMERA'
+  ): Promise<void> {
+    if (!this.settings.enabled) return;
+    if (this.exclusiveSource && source !== this.exclusiveSource && source !== 'MANUAL' && urgency !== 'CRITICAL') {
+      return;
+    }
+
+    const enText = prompts.en?.trim();
+    const teText = prompts.te?.trim() || prompts.en?.trim();
+    const hiText = prompts.hi?.trim() || prompts.en?.trim();
+
+    if (!enText) return;
+
+    // Cadence check: if this alert was just spoken within 12 seconds, do not repeat
+    const now = Date.now();
+    if (enText === this.lastSpokenText && now - this.lastSpokenTimestamp < 12000) {
+      return;
+    }
+
+    this.stop();
+    const sessionId = ++this.currentSessionId;
+    this.isSpeaking = true;
+    this.lastSpokenText = enText;
+    this.lastSpokenTimestamp = now;
+
+    // Step 0: Pre-alert chime
+    await this.playPreAlertChime();
+    if (this.currentSessionId !== sessionId) return;
+
+    // 1. English
+    onLangChange?.('en');
+    this.notifyVisual(enText, false);
+    await this.playPhrasePromise(enText, 'en', urgency, sessionId);
+    if (this.currentSessionId !== sessionId) {
+      onLangChange?.(null);
+      return;
+    }
+
+    // 450ms pause
+    await new Promise((r) => setTimeout(r, 450));
+    if (this.currentSessionId !== sessionId) {
+      onLangChange?.(null);
+      return;
+    }
+
+    // 2. Telugu
+    if (teText) {
+      onLangChange?.('te');
+      this.notifyVisual(teText, false);
+      await this.playPhrasePromise(teText, 'te', urgency, sessionId);
+      if (this.currentSessionId !== sessionId) {
+        onLangChange?.(null);
+        return;
+      }
+      // 450ms pause
+      await new Promise((r) => setTimeout(r, 450));
+      if (this.currentSessionId !== sessionId) {
+        onLangChange?.(null);
+        return;
+      }
+    }
+
+    // 3. Hindi
+    if (hiText) {
+      onLangChange?.('hi');
+      this.notifyVisual(hiText, false);
+      await this.playPhrasePromise(hiText, 'hi', urgency, sessionId);
+      if (this.currentSessionId !== sessionId) {
+        onLangChange?.(null);
+        return;
+      }
+    }
+
+    this.isSpeaking = false;
+    onLangChange?.(null);
+  }
+
+  private playPhrasePromise(
+    text: string,
+    lang: AlertLanguage,
+    urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL',
+    sessionId: number
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.currentSessionId !== sessionId) {
+        resolve();
+        return;
+      }
+
+      const hasNative = this.hasNativeVoiceFor(lang);
+      if ((lang === 'te' || lang === 'hi') && !hasNative) {
+        // Use streaming audio from backend
+        try {
+          const audioUrl = `/api/ai/tts?text=${encodeURIComponent(text)}&lang=${lang}`;
+          const audio = new Audio(audioUrl);
+          audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
+          audio.playbackRate = Math.max(0.7, Math.min(1.3, this.settings.rate));
+          this.currentAudio = audio;
+
+          audio.onended = () => {
+            this.currentAudio = null;
+            resolve();
+          };
+          audio.onerror = () => {
+            this.currentAudio = null;
+            this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+          };
+          const p = audio.play();
+          if (p !== undefined) {
+            p.catch((err) => {
+              if (err.name !== 'AbortError') {
+                this.currentAudio = null;
+                this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+              } else {
+                resolve();
+              }
+            });
+          }
+        } catch {
+          this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+        }
+      } else {
+        // Native SpeechSynthesisUtterance
+        if (!this.synth) {
+          resolve();
+          return;
+        }
+        try {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
+          utterance.rate = Math.max(0.7, Math.min(1.3, this.settings.rate));
+          utterance.pitch = Math.max(0.8, Math.min(1.2, this.settings.pitch));
+          const code = this.getLanguageCode(lang);
+          utterance.lang = code;
+          const voice = this.selectVoiceForLanguage(code);
+          if (voice) utterance.voice = voice;
+
+          utterance.onend = () => {
+            this.currentUtterance = null;
+            resolve();
+          };
+          utterance.onerror = () => {
+            this.currentUtterance = null;
+            resolve();
+          };
+          this.currentUtterance = utterance;
+          this.synth.speak(utterance);
+        } catch {
+          resolve();
+        }
+      }
+    });
+  }
+
+  private playPhoneticPhrase(text: string, lang: AlertLanguage, sessionId: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.currentSessionId !== sessionId || !this.synth) {
+        resolve();
+        return;
+      }
+      let phoneticText = PHONETIC_MAP[text];
+      if (!phoneticText) {
+        if (lang === 'te') {
+          phoneticText = text
+            .replace(/హెచ్చరిక/g, 'Hechcharika')
+            .replace(/సంకేతం/g, 'sanketham')
+            .replace(/గుర్తించబడింది/g, 'gurthinchabadindi')
+            .replace(/నిబంధనలను పాటించండి/g, 'nibandhanalanu paatinchandi')
+            .replace(/వేగ పరిమితి/g, 'vega parimithi')
+            .replace(/జాగ్రత్తగా నడపండి/g, 'jaagraththaga nadapandi');
+        } else if (lang === 'hi') {
+          phoneticText = text
+            .replace(/चेतावनी/g, 'Chetaavani')
+            .replace(/पहचाना गया/g, 'pehchaana gaya')
+            .replace(/नियमों का पालन करें/g, 'niyamon ka paalan karein')
+            .replace(/गति सीमा/g, 'gati seema')
+            .replace(/सावधानी से चलाएं/g, 'saavdhani se chalaayein');
+        } else {
+          phoneticText = text;
+        }
+      }
+      try {
+        const u = new SpeechSynthesisUtterance(phoneticText);
+        u.volume = this.settings.volume;
+        u.rate = 0.9;
+        u.lang = 'en-IN';
+        u.onend = () => resolve();
+        u.onerror = () => resolve();
+        this.synth.speak(u);
+      } catch {
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Test current voice settings with an immediate spoken phrase in the active language.
+   */
+  public testVoiceOutput(onLangChange?: (lang: AlertLanguage | null) => void) {
     const lang = this.settings.language;
+    if (lang === 'en' || (lang as string) === 'all') {
+      const sampleEn = 'AeroVision avionics active. Speed limit ahead is 40 kilometres per hour. Drive safely.';
+      const sampleTe = 'ఏరోవిజన్ రక్షణ వ్యవస్థ యాక్టివ్‌గా ఉంది. ముందు పాఠశాల ప్రాంతం. వేగాన్ని తగ్గించండి.';
+      const sampleHi = 'एरोविज़न सुरक्षा प्रणाली सक्रिय है. आगे गति सीमा चालीस किलोमीटर प्रति घंटा है. सावधानी से चलाएं.';
+      this.speakSequentialMultilingual({ en: sampleEn, te: sampleTe, hi: sampleHi }, 'WARNING', onLangChange, 'MANUAL');
+      return;
+    }
     let sample = 'AeroVision avionics active. Speed limit ahead is 40 kilometres per hour. Drive safely.';
     if (lang === 'te') {
       sample = 'ఏరోవిజన్ రక్షణ వ్యవస్థ యాక్టివ్‌గా ఉంది. ముందు పాఠశాల ప్రాంతం. వేగాన్ని తగ్గించండి.';
     } else if (lang === 'hi') {
       sample = 'एरोविज़न सुरक्षा प्रणाली सक्रिय है. आगे गति सीमा चालीस किलोमीटर प्रति घंटा है. सावधानी से चलाएं.';
     }
-    this.speak(sample, 'WARNING');
+    this.speak(sample, 'WARNING', lang, 'MANUAL');
   }
 }
 
