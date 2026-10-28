@@ -419,20 +419,24 @@ class AIServiceManager:
             shape_bonus = 1.10 if shape_type != "UNKNOWN" else 1.0
             tag_mult = tag_bonus if tag_bonus >= 1.0 else 1.0
             
-            # Neural probability is primary signal (80%), template match is supporting corroboration (20%)
+            # Neural probability is primary signal (85%), template match is supporting corroboration (15%)
             if glyph_pixels > 25 and tmpl_score > 0.25:
-                base_score = prob * 0.80 + tmpl_score * 0.20
+                base_score = prob * 0.85 + tmpl_score * 0.15
             else:
                 base_score = prob
 
-            composite = base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus
+            # Prohibit low-probability candidates (<0.35) from being falsely inflated by multipliers
+            if prob < 0.35:
+                composite = prob * min(1.0, geom_mult) * min(1.0, color_mult)
+            else:
+                composite = min(0.995, base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus)
 
             scored.append({
                 "class_id": cid,
                 "name": name,
                 "category": cat,
                 "urgency": rec.get("urgency", "WARNING"),
-                "neural_prob": prob,
+                "neural_prob": round(prob, 4),
                 "glyph_match": round(tmpl_score, 3),
                 "composite_score": round(composite, 4),
                 "record": rec
@@ -520,31 +524,57 @@ class AIServiceManager:
                     candidates.append((cx - side // 2, cy - side // 2, side, side, iso_crop, f"Reticle {int(scale*100)}% Canonical"))
 
         # 2. Dedicated Red Sign Segmentation (Stop, Speed Limits, Prohibitions, Warnings)
+        # Includes fragment merging to unify split red rings (severed by phone glare or diagonal slash)
         try:
             hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-            mask_r1 = cv2.inRange(hsv, np.array([0, 45, 30]), np.array([14, 255, 255]))
-            mask_r2 = cv2.inRange(hsv, np.array([155, 45, 30]), np.array([180, 255, 255]))
+            mask_r1 = cv2.inRange(hsv, np.array([0, 40, 25]), np.array([14, 255, 255]))
+            mask_r2 = cv2.inRange(hsv, np.array([150, 40, 25]), np.array([180, 255, 255]))
             mask_red = cv2.bitwise_or(mask_r1, mask_r2)
-            k_r = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            k_r = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
             m_red_close = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, k_r)
             cnts_r, _ = cv2.findContours(m_red_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cnts_r = sorted(cnts_r, key=cv2.contourArea, reverse=True)[:3]
-            for cnt in cnts_r:
-                area = cv2.contourArea(cnt)
-                if (w * h * 0.005) <= area <= (w * h * 0.85):
-                    bx, by, bw, bh = cv2.boundingRect(cnt)
-                    aspect = float(bw) / max(1, bh)
-                    if 0.55 <= aspect <= 1.80:
-                        cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
-                        side = max(32, int(max(bw, bh) * 1.80))
-                        c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
-                        candidates.append((bx, by, bw, bh, c_crop, "Red Sign Contour"))
-                        iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
-                        if iso_crop is not None:
-                            candidates.append((bx, by, bw, bh, iso_crop, "Red Sign Canonical"))
-                        iso_train = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10, center_offset_y=0.13)
-                        if iso_train is not None:
-                            candidates.append((bx, by, bw, bh, iso_train, "Red Sign Trained Dist"))
+            
+            raw_red_blobs = []
+            for c in cnts_r:
+                area = cv2.contourArea(c)
+                if area >= (w * h * 0.003):
+                    bx, by, bw, bh = cv2.boundingRect(c)
+                    raw_red_blobs.append([bx, by, bw, bh])
+
+            # Merge split fragments of the same sign (arcs severed by glare, reflection or slash)
+            merged_red = []
+            for b in raw_red_blobs:
+                bx, by, bw, bh = b
+                is_m = False
+                cx1, cy1 = bx + bw // 2, by + bh // 2
+                for mb in merged_red:
+                    cx2, cy2 = mb[0] + mb[2] // 2, mb[1] + mb[3] // 2
+                    dist = np.hypot(cx1 - cx2, cy1 - cy2)
+                    max_dim = max(bw, bh, mb[2], mb[3])
+                    if dist < max_dim * 1.5:
+                        x_min = min(bx, mb[0])
+                        y_min = min(by, mb[1])
+                        x_max = max(bx + bw, mb[0] + mb[2])
+                        y_max = max(by + bh, mb[1] + mb[3])
+                        mb[0], mb[1], mb[2], mb[3] = x_min, y_min, x_max - x_min, y_max - y_min
+                        is_m = True
+                        break
+                if not is_m:
+                    merged_red.append(list(b))
+
+            for bx, by, bw, bh in merged_red:
+                aspect = float(bw) / max(1, bh)
+                if 0.55 <= aspect <= 1.80:
+                    cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
+                    side = max(32, int(max(bw, bh) * 1.80))
+                    c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
+                    candidates.append((bx, by, bw, bh, c_crop, "Red Sign Contour"))
+                    iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
+                    if iso_crop is not None:
+                        candidates.append((bx, by, bw, bh, iso_crop, "Red Sign Canonical"))
+                    iso_train = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10, center_offset_y=0.13)
+                    if iso_train is not None:
+                        candidates.append((bx, by, bw, bh, iso_train, "Red Sign Trained Dist"))
         except Exception:
             pass
 
@@ -621,20 +651,22 @@ class AIServiceManager:
         try:
             blurred = cv2.GaussianBlur(gray, (9, 9), 2)
             min_r = int(min(h, w) * 0.08)
-            max_r = int(min(h, w) * 0.46)
+            max_r = int(min(h, w) * 0.44)
             circles = cv2.HoughCircles(
-                blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=int(min(h, w) * 0.12),
-                param1=60, param2=28, minRadius=min_r, maxRadius=max_r
+                blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=int(min(h, w) * 0.15),
+                param1=90, param2=45, minRadius=min_r, maxRadius=max_r
             )
             if circles is not None:
                 for circle in circles[0, :3]:
                     cx_c, cy_c, r_c = int(circle[0]), int(circle[1]), int(circle[2])
-                    side = max(32, int(r_c * 3.4))
-                    c_crop = self.safe_square_crop(frame_bgr, cx_c, cy_c, side)
-                    candidates.append((cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, c_crop, "Hough Circle"))
-                    iso_crop = self.make_isolated_sign_crop(frame_bgr, cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, 2.10)
-                    if iso_crop is not None:
-                        candidates.append((cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, iso_crop, "Hough Circle Canonical"))
+                    # Ensure the circle boundary is within image bounds
+                    if 0 <= cx_c < w and 0 <= cy_c < h:
+                        side = max(32, int(r_c * 2.10))
+                        c_crop = self.safe_square_crop(frame_bgr, cx_c, cy_c, side)
+                        candidates.append((cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, c_crop, "Hough Circle"))
+                        iso_crop = self.make_isolated_sign_crop(frame_bgr, cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, 2.10)
+                        if iso_crop is not None:
+                            candidates.append((cx_c - r_c, cy_c - r_c, r_c * 2, r_c * 2, iso_crop, "Hough Circle Canonical"))
         except Exception:
             pass
 
@@ -888,24 +920,26 @@ class AIServiceManager:
             stage_desc = f"Verified statutory match: {cname} ({rec.get('sign_code', 'IRC:67')})"
             is_confirmed = True
 
+        display_conf = min(0.995, max(neural_prob, min(0.995, conf)))
         best_res = {
             "class_id": cid,
             "class_name": cname,
-            "confidence_score": conf,
-            "confidence_percentage": round(conf * 100.0, 1),
+            "confidence_score": display_conf,
+            "confidence_percentage": round(display_conf * 100.0, 1),
             "margin_score": round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
         }
 
-        alert = self.alert_system.process_detection(cid, conf)
+        alert = self.alert_system.process_detection(cid, display_conf)
         norm_label, norm_conf = self.adapter.normalize(best_res)
         agent_step = self.coordinator.process(norm_label, norm_conf)
 
         top5_list = []
         for item in best_top5:
+            item_conf = min(0.995, max(item["neural_prob"], min(0.995, item["composite_score"])))
             top5_list.append({
                 "class_id": item["class_id"],
                 "class_name": item["name"],
-                "percentage": round(item["composite_score"] * 100.0, 1),
+                "percentage": round(item_conf * 100.0, 1),
                 "glyph_match": item["glyph_match"]
             })
 
@@ -915,8 +949,8 @@ class AIServiceManager:
             "sign_name": cname,
             "class_id": cid,
             "sign_code": rec.get("sign_code", f"IRC67-#{cid:03d}"),
-            "confidence": conf,
-            "confidence_percentage": round(conf * 100.0, 1),
+            "confidence": display_conf,
+            "confidence_percentage": round(display_conf * 100.0, 1),
             "glyph_match": glyph_match,
             "margin_score": best_res["margin_score"],
             "is_detected": True,
