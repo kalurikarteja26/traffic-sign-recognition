@@ -350,96 +350,82 @@ class AIServiceManager:
                                 best_m = val
                     tmpl_score = max(0.0, best_m)
 
-            # Geometric Shape Consistency Enforcement
+            # Geometric Shape Consistency (Soft Prior, Never Overrides High Neural Confidence)
             geom_mult = 1.0
             if is_upright_triangle:
                 if cat == "CAUTIONARY":
-                    geom_mult = 1.65
-                elif cid in (0, 1):
-                    # Upright triangle CANNOT be Stop Sign (octagon) or Give Way (inverted)
-                    geom_mult = 0.001
-                elif cat == "MANDATORY":
-                    geom_mult = 0.02
-                elif cat == "INFORMATORY":
-                    geom_mult = 0.01
+                    geom_mult = 1.25
+                elif prob < 0.50:
+                    geom_mult = 0.85
 
             elif is_inverted_triangle:
                 if cid == 1:
-                    geom_mult = 2.00
-                else:
-                    geom_mult = 0.01
+                    geom_mult = 1.35
+                elif prob < 0.50:
+                    geom_mult = 0.85
 
             elif is_octagon:
                 if cid == 0:
-                    geom_mult = 2.00
-                elif cat == "CAUTIONARY":
-                    geom_mult = 0.05
+                    geom_mult = 1.35
+                elif prob < 0.50:
+                    geom_mult = 0.85
 
             elif is_circle:
                 if cat == "MANDATORY":
-                    geom_mult = 1.35
-                elif cat == "CAUTIONARY":
-                    geom_mult = 0.10
+                    geom_mult = 1.25
+                elif prob < 0.50:
+                    geom_mult = 0.85
 
             elif shape_type == "RECTANGLE":
                 if cat == "INFORMATORY":
-                    geom_mult = 1.65
-                elif cat == "CAUTIONARY":
-                    geom_mult = 0.01
-                elif cid in (0, 1):
-                    geom_mult = 0.001
-                elif cat == "MANDATORY":
-                    geom_mult = 0.05
+                    geom_mult = 1.25
+                elif prob < 0.50:
+                    geom_mult = 0.85
 
             else:
                 # Color based fallback if shape inconclusive
                 if red_ratio > 0.10:
                     if cat in ("MANDATORY", "CAUTIONARY"):
-                        geom_mult = 1.25
-                    elif cat == "INFORMATORY":
-                        geom_mult = 0.25
+                        geom_mult = 1.15
                 elif blue_ratio > 0.20:
                     if cat == "INFORMATORY" or (cat == "MANDATORY" and "compulsory" in name.lower()):
-                        geom_mult = 1.30
-                    else:
-                        geom_mult = 0.25
+                        geom_mult = 1.15
                 elif yellow_ratio > 0.15:
                     if cat == "CAUTIONARY":
-                        geom_mult = 1.30
-                    else:
-                        geom_mult = 0.40
+                        geom_mult = 1.15
 
-            # Chromatic Consistency Enforcement
+            # Chromatic Consistency Enforcement (Soft Guidance)
             color_mult = 1.0
             if blue_ratio > 0.22 and blue_ratio > red_ratio:
                 if cat == "INFORMATORY" or (cat == "MANDATORY" and cid in range(23, 33)):
-                    color_mult = 1.45
-                elif cat == "MANDATORY" and cid not in range(23, 33):
-                    color_mult = 0.05
-                elif cat == "CAUTIONARY":
-                    color_mult = 0.02
+                    color_mult = 1.20
+                elif prob < 0.50:
+                    color_mult = 0.85
             elif red_ratio > 0.12 and red_ratio > blue_ratio:
-                if cat == "MANDATORY" and cid in range(23, 33):
-                    color_mult = 0.05
-                elif cat == "INFORMATORY":
-                    color_mult = 0.05
+                if cat == "MANDATORY" or cat == "CAUTIONARY":
+                    color_mult = 1.20
+                elif prob < 0.50:
+                    color_mult = 0.85
 
             # Disambiguate numeric speed limits vs vehicle/axle weight limits
             speed_mult = 1.0
             if "speed limit" in name.lower():
-                if tmpl_score > 0.60:
-                    speed_mult = 1.45
-                elif tmpl_score < 0.35:
-                    speed_mult = 0.80
+                if tmpl_score > 0.50:
+                    speed_mult = 1.20
             elif "axle load" in name.lower() or "load limit" in name.lower():
-                if tmpl_score < 0.70:
-                    speed_mult = 0.65
+                if tmpl_score > 0.50:
+                    speed_mult = 1.20
 
-            shape_bonus = 1.25 if shape_type != "UNKNOWN" else 0.70
-            if glyph_pixels > 25:
-                composite = (prob * 0.35 + tmpl_score * 0.65) * geom_mult * color_mult * speed_mult * tag_bonus * shape_bonus
+            shape_bonus = 1.10 if shape_type != "UNKNOWN" else 1.0
+            tag_mult = tag_bonus if tag_bonus >= 1.0 else 1.0
+            
+            # Neural probability is primary signal (80%), template match is supporting corroboration (20%)
+            if glyph_pixels > 25 and tmpl_score > 0.25:
+                base_score = prob * 0.80 + tmpl_score * 0.20
             else:
-                composite = prob * geom_mult * color_mult * tag_bonus * shape_bonus
+                base_score = prob
+
+            composite = base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus
 
             scored.append({
                 "class_id": cid,
@@ -522,7 +508,18 @@ class AIServiceManager:
         cx, cy = w // 2, h // 2
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 1. Dedicated Red Sign Segmentation (Stop, Speed Limits, Prohibitions, Warnings)
+        # 1. Multi-Scale Square Aiming Reticles (Centered on HUD reticle: 35%, 50%, 68%, 88%)
+        min_dim = min(h, w)
+        for scale in [0.35, 0.50, 0.68, 0.88]:
+            side = int(min_dim * scale)
+            c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
+            candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, f"Reticle {int(scale*100)}%"))
+            if scale in [0.35, 0.50]:
+                iso_crop = self.make_isolated_sign_crop(frame_bgr, cx - side // 2, cy - side // 2, side, side, 1.80)
+                if iso_crop is not None:
+                    candidates.append((cx - side // 2, cy - side // 2, side, side, iso_crop, f"Reticle {int(scale*100)}% Canonical"))
+
+        # 2. Dedicated Red Sign Segmentation (Stop, Speed Limits, Prohibitions, Warnings)
         try:
             hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
             mask_r1 = cv2.inRange(hsv, np.array([0, 45, 30]), np.array([14, 255, 255]))
@@ -641,18 +638,7 @@ class AIServiceManager:
         except Exception:
             pass
 
-        # 5. Multi-Scale Square Aiming Reticles (Centered on HUD crosshairs: 35%, 50%, 70%, 88%)
-        min_dim = min(h, w)
-        for scale in [0.35, 0.50, 0.70, 0.88]:
-            side = int(min_dim * scale)
-            c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
-            candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, f"Reticle {int(scale*100)}%"))
-            if scale in [0.35, 0.50]:
-                iso_crop = self.make_isolated_sign_crop(frame_bgr, cx - side // 2, cy - side // 2, side, side, 1.80)
-                if iso_crop is not None:
-                    candidates.append((cx - side // 2, cy - side // 2, side, side, iso_crop, f"Reticle {int(scale*100)}% Canonical"))
-
-        # 6. Full Frame Fallback
+        # 5. Full Frame Fallback
         side = max(h, w)
         c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
         candidates.append((0, 0, w, h, c_crop, "Full Frame"))
@@ -882,13 +868,14 @@ class AIServiceManager:
         # Stage 1: ANALYZING (candidate sighted; analyzing geometry, border color & glyph contour)
         # Stage 2: SEARCHING_RECORDS (cross-referencing candidate with 108 Indian RTO records)
         # Stage 3: CONFIRMED (verified match confirmed from records)
-        if conf < 0.38 or (glyph_match < 0.22 and conf < 0.48):
+        margin = round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
+        if conf < 0.28:
             analysis_stage = "ANALYZING"
             stage_step = 1
             stage_title = "STAGE 1: ANALYZING SIGN VISUALS"
             stage_desc = "Inspecting geometry, chromatic contours and glyph profile..."
             is_confirmed = False
-        elif conf < 0.50:
+        elif conf < 0.38 and margin < 0.12:
             analysis_stage = "SEARCHING_RECORDS"
             stage_step = 2
             stage_title = "STAGE 2: MATCHING 108 RTO RECORDS"

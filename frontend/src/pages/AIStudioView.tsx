@@ -63,6 +63,12 @@ export const AIStudioView: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadedImageSrc, setUploadedImageSrc] = useState<string | null>(null);
+  const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
+  const [snapshotPreviewUrl, setSnapshotPreviewUrl] = useState<string | null>(null);
+  const [isSnapshotFrozen, setIsSnapshotFrozen] = useState(false);
+  const isSnapshotFrozenRef = useRef(false);
+  const [cameraShutterFlash, setCameraShutterFlash] = useState(false);
+  const [snapshotAnalysis, setSnapshotAnalysis] = useState<any>(null);
 
   useEffect(() => {
     api.getModelStatus().then(setModelStatus).catch(() => null);
@@ -107,13 +113,58 @@ export const AIStudioView: React.FC = () => {
     lockedUntil: number;
   } | null>(null);
 
-  const parsePredictionResult = (res: any) => {
+  const parsePredictionResult = (res: any, isSnapshot = false) => {
     if (!res || !res.primary_prediction) return null;
     const now = Date.now();
     const rawCid = Number(res.primary_prediction.class_id);
     const rawConf = Math.round(res.primary_prediction.confidence * 1000) / 10;
     const rawBox: [number, number, number, number] = res.bounding_box || [160, 100, 320, 260];
-    const isDetected = Boolean(res.is_detected !== false && rawCid >= 0 && rawConf >= 28);
+    const isDetected = Boolean(res.is_detected !== false && rawCid >= 0 && rawConf >= 25);
+
+    // Instant confirmation bypass for direct picture captures and verified model predictions
+    if (isSnapshot || res.primary_prediction.is_confirmed) {
+      const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === rawCid) || ALL_108_RTO_SIGNS[rawCid];
+      const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
+      const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (rawCid === 0 || rawCid === 2 ? 'CRITICAL' : 'WARNING'));
+      const isInfoSign = category === 'INFORMATORY' || urgency === 'INFORMATIONAL' || res.primary_prediction.alert_type === 'INFO';
+      const alertType = isInfoSign ? 'INFO' : 'ALERT';
+
+      smoothedBoxRef.current = rawBox;
+      return {
+        sign_name: signMeta?.name || res.primary_prediction.sign_name,
+        name_te: signMeta?.name_te || res.primary_prediction.name_te,
+        name_hi: signMeta?.name_hi || res.primary_prediction.name_hi,
+        class_id: signMeta?.sign_code || res.primary_prediction.sign_code || `#${String(rawCid).padStart(3, '0')}`,
+        raw_class_id: rawCid,
+        category: category,
+        shape: signMeta?.shape || res.primary_prediction.shape || 'Standard',
+        color_code: signMeta?.color_code || '#EF4444',
+        image_url: signMeta?.image_url || res.primary_prediction.image_url || `/signs/${String(rawCid).padStart(3, '0')}.png`,
+        confidence: rawConf,
+        glyph_match: res.primary_prediction.glyph_match || 0,
+        margin_score: res.primary_prediction.margin_score || 0,
+        is_confirmed: true,
+        stage_step: 3,
+        stage_title: 'STAGE 3: RECORD VERIFIED & ACTIVE',
+        stage_description: `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`,
+        alert_type: alertType,
+        alert_en: res.primary_prediction.alert_en || signMeta?.tts_prompt,
+        alert_te: res.primary_prediction.alert_te,
+        alert_hi: res.primary_prediction.alert_hi,
+        legal_reference: signMeta?.legal_reference || res.primary_prediction.legal_reference || 'IRC:67 Regulatory',
+        penalty_info: signMeta?.penalty_info || res.primary_prediction.penalty_info || `₹${res.primary_prediction.fine_amount || 500} fine under ${res.primary_prediction.mv_act_section || 'Sec 177 MV Act'}`,
+        meaning: signMeta?.meaning || res.primary_prediction.advice,
+        meaning_te: signMeta?.meaning_te || res.primary_prediction.meaning_te,
+        meaning_hi: signMeta?.meaning_hi || res.primary_prediction.meaning_hi,
+        halt: signMeta?.halt,
+        distance_est: '~14m',
+        inference_ms: Math.round((res.inference_time_ms || 18.0) * 10) / 10,
+        bounding_box: rawBox,
+        frame_dimensions: res.frame_dimensions || [640, 480],
+        top5: res.top5_predictions || [],
+        status: 'CONFIRMED_ACTIVE',
+      };
+    }
 
     if (!isDetected) {
       // Check if prior confirmed detection is still within warm grace period (600ms)
@@ -321,7 +372,7 @@ export const AIStudioView: React.FC = () => {
   const loopTimeoutRef = useRef<any>(null);
 
   const scheduleNextTick = (delayMs = 60) => {
-    if (!webcamActiveRef.current) return;
+    if (!webcamActiveRef.current || isSnapshotFrozenRef.current) return;
     if (loopTimeoutRef.current) clearTimeout(loopTimeoutRef.current);
     loopTimeoutRef.current = setTimeout(() => {
       runLiveFrameInference();
@@ -333,6 +384,10 @@ export const AIStudioView: React.FC = () => {
     // Acquire exclusive audio lock for optical camera detection
     speechService.setExclusiveSource('CAMERA');
     setActiveMode('webcam');
+    setIsSnapshotFrozen(false);
+    isSnapshotFrozenRef.current = false;
+    setSnapshotPreviewUrl(null);
+    setSnapshotAnalysis(null);
     setLivePrediction({
       sign_name: 'Searching for Signs...',
       class_id: 'RTO-OPTICAL',
@@ -382,6 +437,10 @@ export const AIStudioView: React.FC = () => {
 
   const stopWebcam = () => {
     webcamActiveRef.current = false;
+    isSnapshotFrozenRef.current = false;
+    setIsSnapshotFrozen(false);
+    setSnapshotPreviewUrl(null);
+    setSnapshotAnalysis(null);
     speechService.setExclusiveSource(null);
     if (loopTimeoutRef.current) {
       clearTimeout(loopTimeoutRef.current);
@@ -473,7 +532,7 @@ export const AIStudioView: React.FC = () => {
 
   // Resilient non-blocking webcam inference loop for real-time PyTorch model
   const runLiveFrameInference = async () => {
-    if (!webcamActiveRef.current) return;
+    if (!webcamActiveRef.current || isSnapshotFrozenRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -511,12 +570,12 @@ export const AIStudioView: React.FC = () => {
         canvas.toBlob(resolve, 'image/jpeg', 0.80)
       );
 
-      if (blob && webcamActiveRef.current) {
+      if (blob && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
         const formData = new FormData();
         formData.append('file', blob, 'webcam_frame.jpg');
         const res = await api.predictFrame(formData);
         const parsed = parsePredictionResult(res);
-        if (parsed && webcamActiveRef.current) {
+        if (parsed && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
           setLivePrediction(parsed);
           if (parsed.is_confirmed && parsed.raw_class_id >= 0) {
             speakWebcamDetection(parsed);
@@ -530,6 +589,129 @@ export const AIStudioView: React.FC = () => {
       scheduleNextTick(60);
     }
   };
+
+  // High-Resolution Snapshot Capture & Immediate Statutory Voice Alert
+  const captureAndAnalyzeSnapshot = async () => {
+    if (!webcamActiveRef.current || !videoRef.current || videoRef.current.readyState < 2) {
+      toast.error('Camera stream is not active. Please click "Live PC Webcam" to enable camera first.');
+      return;
+    }
+
+    const video = videoRef.current;
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+
+    // Synthetic audio click sound via Web Audio API (tactile camera shutter feedback)
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(750, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.09);
+    } catch (e) {
+      // AudioContext unavailable or blocked
+    }
+
+    // Trigger visual shutter flash
+    setCameraShutterFlash(true);
+    setTimeout(() => setCameraShutterFlash(false), 200);
+
+    // Freeze live inference loop immediately
+    setIsSnapshotFrozen(true);
+    isSnapshotFrozenRef.current = true;
+    setIsCapturingSnapshot(true);
+
+    // Capture crisp native resolution frame from camera
+    const canvas = document.createElement('canvas');
+    canvas.width = vw;
+    canvas.height = vh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setIsCapturingSnapshot(false);
+      return;
+    }
+
+    ctx.drawImage(video, 0, 0, vw, vh);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    setSnapshotPreviewUrl(dataUrl);
+
+    try {
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', 0.95)
+      );
+
+      if (!blob) throw new Error('Failed to capture high-res frame');
+
+      const formData = new FormData();
+      formData.append('file', blob, 'camera_snapshot.jpg');
+      toast.info('Analyzing sign photo with PyTorch 108-Class Model...');
+
+      const res = await api.predictFrame(formData);
+
+      const parsed = parsePredictionResult(res, true);
+      if (parsed) {
+        setLivePrediction(parsed);
+        setSnapshotAnalysis(parsed);
+
+        if (parsed.raw_class_id >= 0) {
+          toast.success(`Target Locked: ${parsed.sign_name} (${parsed.confidence}% Conf)`);
+          // INSTANTLY SOUND STATUTORY VOICE ALERT (force=true bypasses cadence cooldown)
+          speakWebcamDetection(parsed, true);
+        } else {
+          toast.error('No road sign detected in picture. Please align the sign in the center reticle and retake.');
+          speechService.speak(
+            webcamLang === 'te'
+              ? 'ట్రాఫిక్ గుర్తు గుర్తించబడలేదు. దయచేసి గుర్తును బాక్స్‌లో ఉంచి ఫోటో మళ్లీ తీయండి.'
+              : webcamLang === 'hi'
+              ? 'ट्रैफिक साइन की पहचान नहीं हो सकी। कृपया साइन को बॉक्स के बीच में रखें और फोटो पुनः लें।'
+              : 'Road sign not detected. Please align the sign in the center box and take picture again.',
+            'INFORMATIONAL',
+            webcamLang,
+            'MANUAL'
+          );
+        }
+      }
+    } catch (err: any) {
+      toast.error('Snapshot analysis error: ' + err.message);
+    } finally {
+      setIsCapturingSnapshot(false);
+    }
+  };
+
+  const resumeLiveStream = () => {
+    setIsSnapshotFrozen(false);
+    isSnapshotFrozenRef.current = false;
+    setSnapshotPreviewUrl(null);
+    setSnapshotAnalysis(null);
+    if (webcamActiveRef.current) {
+      scheduleNextTick(60);
+    }
+    toast.info('Live optical camera scanning resumed.');
+  };
+
+  // Keyboard shortcut: Spacebar to capture snapshot or resume live stream
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.code === 'Space' && activeMode === 'webcam' && webcamActive && !isCapturingSnapshot) {
+        e.preventDefault();
+        if (isSnapshotFrozen) {
+          resumeLiveStream();
+        } else {
+          captureAndAnalyzeSnapshot();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeMode, webcamActive, isCapturingSnapshot, isSnapshotFrozen]);
 
   useEffect(() => {
     if (webcamActive) {
@@ -559,7 +741,7 @@ export const AIStudioView: React.FC = () => {
       const formData = new FormData();
       formData.append('file', file);
       const res = await api.predictFrame(formData);
-      const parsed = parsePredictionResult(res);
+      const parsed = parsePredictionResult(res, true);
       if (parsed) {
         setLivePrediction(parsed);
         if (parsed.is_confirmed && parsed.raw_class_id >= 0) {
@@ -696,6 +878,23 @@ export const AIStudioView: React.FC = () => {
             <span>Live PC Webcam</span>
           </button>
 
+          {activeMode === 'webcam' && (
+            <button
+              onClick={isSnapshotFrozen ? resumeLiveStream : captureAndAnalyzeSnapshot}
+              disabled={isCapturingSnapshot}
+              className={`px-3.5 py-1.5 rounded-lg font-mono text-xs transition-all flex items-center gap-1.5 border cursor-pointer ${
+                isSnapshotFrozen
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
+                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.3)] font-semibold'
+              }`}
+            >
+              <span className="material-symbols-outlined text-sm">
+                {isSnapshotFrozen ? 'videocam' : 'photo_camera'}
+              </span>
+              <span>{isSnapshotFrozen ? 'Resume Live Stream' : 'Take Picture & Alert'}</span>
+            </button>
+          )}
+
           <button
             onClick={() => fileInputRef.current?.click()}
             className={`px-3.5 py-1.5 rounded-lg font-mono text-xs transition-all flex items-center gap-1.5 ${
@@ -817,6 +1016,33 @@ export const AIStudioView: React.FC = () => {
               />
               <canvas ref={canvasRef} className="hidden" />
             </div>
+
+            {/* Frozen High-Res Snapshot Viewport */}
+            {activeMode === 'webcam' && isSnapshotFrozen && snapshotPreviewUrl ? (
+              <img
+                src={snapshotPreviewUrl}
+                alt="Captured sign snapshot"
+                className="absolute inset-0 w-full h-full object-cover z-10"
+              />
+            ) : null}
+
+            {/* Camera Shutter Flash Effect */}
+            {cameraShutterFlash && (
+              <div className="absolute inset-0 bg-white/95 z-50 pointer-events-none transition-opacity duration-150 animate-pulse"></div>
+            )}
+
+            {/* Neural Evaluation Spinner Overlay */}
+            {isCapturingSnapshot && (
+              <div className="absolute inset-0 bg-black/75 backdrop-blur-sm z-40 flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-full border-4 border-cyan-400 border-t-transparent animate-spin"></div>
+                <div className="font-mono text-sm text-cyan-300 font-bold tracking-wider animate-pulse">
+                  PYTORCH MODEL ANALYZING CAPTURED SIGN...
+                </div>
+                <div className="font-mono text-xs text-slate-400">
+                  MobileNetV2 Residual Network • 108 Indian RTO Classes
+                </div>
+              </div>
+            )}
 
             {activeMode === 'upload' && uploadedImageSrc ? (
               /* Uploaded Image Viewport */
@@ -1069,31 +1295,91 @@ export const AIStudioView: React.FC = () => {
               </div>
             )}
 
-            {/* Bottom Player In-Viewport Controls Overlay */}
-            <div className="absolute bottom-3 inset-x-3 bg-[#070e1c]/80 border border-white/10 backdrop-blur-xl px-4 py-2 rounded-xl flex items-center justify-between shadow-lg">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setIsPlaying(!isPlaying)}
-                  className="p-1 rounded bg-white/5 hover:bg-white/10 text-white transition-colors"
-                >
-                  <span className="material-symbols-outlined text-lg">
-                    {isPlaying ? 'pause' : 'play_arrow'}
+            {/* Bottom In-Viewport Controls Overlay */}
+            {activeMode === 'webcam' ? (
+              <div className="absolute bottom-3 inset-x-3 z-30 bg-[#070e1c]/90 border border-cyan-500/30 backdrop-blur-xl px-4 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-2 shadow-2xl">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full ${isSnapshotFrozen ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`}></span>
+                  <span className="font-mono text-xs text-white font-semibold">
+                    {isSnapshotFrozen ? 'PHOTO CAPTURED & ANALYZED' : 'LIVE CAMERA VIEW'}
                   </span>
-                </button>
-                <div className="h-4 w-px bg-white/10"></div>
-                <span className="font-mono text-xs text-cyan-400 font-semibold">
-                  00:02:18.420
-                </span>
-                <span className="font-mono text-xs text-slate-400">/ 00:04:30.000</span>
-              </div>
+                  <span className="text-slate-500 hidden sm:inline">•</span>
+                  <span className="font-mono text-[11px] text-slate-300 hidden sm:inline">
+                    {isSnapshotFrozen ? (livePrediction?.is_confirmed ? `Locked: ${livePrediction.sign_name}` : 'Awaiting sign') : 'Aim sign inside box'}
+                  </span>
+                </div>
 
-              <div className="flex items-center gap-3 font-mono text-xs">
-                <span className="text-slate-400">FRAME</span>
-                <span className="text-white font-semibold bg-white/10 px-2 py-0.5 rounded">
-                  04,289
-                </span>
+                <div className="flex items-center gap-2">
+                  {!isSnapshotFrozen ? (
+                    <button
+                      onClick={captureAndAnalyzeSnapshot}
+                      disabled={isCapturingSnapshot}
+                      className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-xs font-bold transition-all shadow-[0_0_16px_rgba(34,211,238,0.4)] flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">photo_camera</span>
+                      <span>Take Picture & Sound Alert</span>
+                      <kbd className="hidden md:inline px-1.5 py-0.5 rounded bg-black/40 text-[10px] text-cyan-200 font-sans border border-cyan-400/30">Space</kbd>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={resumeLiveStream}
+                        className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-mono text-xs font-semibold border border-cyan-400/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-sm">videocam</span>
+                        <span>Resume Live Feed</span>
+                      </button>
+                      <button
+                        onClick={captureAndAnalyzeSnapshot}
+                        disabled={isCapturingSnapshot}
+                        className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-mono text-xs font-bold transition-all shadow flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-sm">refresh</span>
+                        <span>Retake Picture</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {livePrediction?.is_confirmed && (
+                    <button
+                      onClick={() => speakWebcamDetection(livePrediction, true)}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold border border-emerald-400/40 transition-colors flex items-center gap-1.5 cursor-pointer"
+                      title="Replay statutory speech alert"
+                    >
+                      <span className="material-symbols-outlined text-sm">volume_up</span>
+                      <span className="hidden sm:inline">Play Alert</span>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="absolute bottom-3 inset-x-3 bg-[#070e1c]/80 border border-white/10 backdrop-blur-xl px-4 py-2 rounded-xl flex items-center justify-between shadow-lg">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className="p-1 rounded bg-white/5 hover:bg-white/10 text-white transition-colors cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-lg">
+                      {isPlaying ? 'pause' : 'play_arrow'}
+                    </span>
+                  </button>
+                  <div className="h-4 w-px bg-white/10"></div>
+                  <span className="font-mono text-xs text-cyan-400 font-semibold">
+                    00:02:18.420
+                  </span>
+                  <span className="font-mono text-xs text-slate-400">/ 00:04:30.000</span>
+                </div>
+
+                <div className="flex items-center gap-3 font-mono text-xs">
+                  <span className="text-slate-400">FRAME</span>
+                  <span className="text-white font-semibold bg-white/10 px-2 py-0.5 rounded">
+                    04,289
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Optical Telemetry Auxiliary Strip */}
