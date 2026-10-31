@@ -1,7 +1,7 @@
 // frontend/src/api.ts
 // Unified API client for AeroVision Platform
 
-const API_BASE = '/api';
+export const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 
 export function getStoredToken(): string | null {
   return localStorage.getItem('aerovision_token');
@@ -130,7 +130,7 @@ export const api = {
   },
   uploadVideo: (formData: FormData) => request('/vault/videos/upload', { method: 'POST', body: formData }),
   getVideoDetails: (id: number) => request(`/vault/videos/${id}`),
-  getVideoStreamUrl: (id: number) => `/api/vault/videos/${id}/stream`,
+  getVideoStreamUrl: (id: number) => `${API_BASE}/vault/videos/${id}/stream`,
   addBookmark: (id: number, data: any) => request(`/vault/videos/${id}/bookmark`, { method: 'POST', body: JSON.stringify(data) }),
   deleteVideo: (id: number) => request(`/vault/videos/${id}`, { method: 'DELETE' }),
 

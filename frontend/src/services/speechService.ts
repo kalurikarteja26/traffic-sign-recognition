@@ -2,6 +2,8 @@
 // Robust, Queue-Managed Text-to-Speech Engine with Multi-Language Support (EN / TE / HI)
 // Zero-overlap audio lock, natural ADAS rhythm & cadence, and authentic native streaming support
 
+import { API_BASE } from '../api';
+
 export type AlertLanguage = 'en' | 'te' | 'hi' | 'all';
 export type AlertSource = 'CAMERA' | 'NAVIGATION' | 'MANUAL' | 'SYSTEM';
 
@@ -378,7 +380,7 @@ class SpeechService {
     }
 
     try {
-      const audioUrl = `/api/ai/tts?text=${encodeURIComponent(event.text)}&lang=${lang}`;
+      const audioUrl = `${API_BASE}/ai/tts?text=${encodeURIComponent(event.text)}&lang=${lang}`;
       const audio = new Audio(audioUrl);
       audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
       audio.playbackRate = Math.max(0.7, Math.min(1.3, this.settings.rate));
@@ -687,7 +689,7 @@ class SpeechService {
       if ((lang === 'te' || lang === 'hi') && !hasNative) {
         // Use streaming audio from backend
         try {
-          const audioUrl = `/api/ai/tts?text=${encodeURIComponent(text)}&lang=${lang}`;
+          const audioUrl = `${API_BASE}/ai/tts?text=${encodeURIComponent(text)}&lang=${lang}`;
           const audio = new Audio(audioUrl);
           audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
           audio.playbackRate = Math.max(0.7, Math.min(1.3, this.settings.rate));
