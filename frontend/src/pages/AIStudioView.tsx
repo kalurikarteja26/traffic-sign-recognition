@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { api } from '../api';
+import { api, getApiBase, setCustomApiUrl } from '../api';
 import { ALL_108_RTO_SIGNS, buildTrafficSignVoicePrompt } from '../data/rtoSignsData';
 import { speechService, type AlertLanguage } from '../services/speechService';
 import { navigationService, type NavigationState } from '../services/navigationService';
@@ -23,6 +23,10 @@ export const AIStudioView: React.FC = () => {
   } | null>(null);
   const lastSpokenWebcamSignRef = useRef<{ signId: number; timestamp: number }>({ signId: -1, timestamp: 0 });
   const globalLastSpokenTimestampRef = useRef<number>(0);
+
+  // Custom Backend API Configuration
+  const [showApiModal, setShowApiModal] = useState(false);
+  const [customApiUrlInput, setCustomApiUrlInput] = useState(getApiBase());
 
   // Live Location & Google Maps Navigation State
   const [gpsNav, setGpsNav] = useState<NavigationState>(navigationService.getState());
@@ -679,7 +683,12 @@ export const AIStudioView: React.FC = () => {
         }
       }
     } catch (err: any) {
-      toast.error('Snapshot analysis error: ' + err.message);
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
+        toast.error('Cannot reach backend API. Connect your Render URL via "Backend API" button.');
+        setShowApiModal(true);
+      } else {
+        toast.error('Snapshot analysis error: ' + err.message);
+      }
     } finally {
       setIsCapturingSnapshot(false);
     }
@@ -995,6 +1004,19 @@ export const AIStudioView: React.FC = () => {
             <span className="material-symbols-outlined text-sm">graphic_eq</span>
             <span className="hidden md:inline">Test Output</span>
           </button>
+
+          {/* Backend API Link / Connection Config */}
+          <button
+            onClick={() => {
+              setCustomApiUrlInput(getApiBase());
+              setShowApiModal(true);
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-mono flex items-center gap-1 transition-all cursor-pointer"
+            title="Configure Backend API Server URL"
+          >
+            <span className="material-symbols-outlined text-sm text-cyan-400">dns</span>
+            <span className="hidden md:inline">API URL</span>
+          </button>
         </div>
       </div>
 
@@ -1002,8 +1024,8 @@ export const AIStudioView: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* LEFT: 16:9 Vision Player Stage (Cols 8) */}
         <div className="lg:col-span-8 flex flex-col gap-4">
-          {/* Video Viewport Container */}
-          <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#070e1c] shadow-2xl group select-none border border-white/10">
+          {/* Video Viewport Container - Generous, high-visibility large viewport */}
+          <div className={`relative w-full ${activeMode === 'webcam' ? 'min-h-[460px] sm:min-h-[560px] md:min-h-[640px] h-[58vh] sm:h-[620px]' : 'aspect-video'} rounded-2xl overflow-hidden bg-black shadow-2xl group select-none border border-white/15`}>
             {/* Real Webcam Stream Viewport */}
             {/* Real Webcam Stream Viewport - Permanently mounted to ensure refs are never null */}
             <div className={`relative w-full h-full bg-black flex items-center justify-center ${activeMode === 'webcam' ? 'block' : 'hidden'}`}>
@@ -1035,11 +1057,11 @@ export const AIStudioView: React.FC = () => {
             {isCapturingSnapshot && (
               <div className="absolute inset-0 bg-black/75 backdrop-blur-sm z-40 flex flex-col items-center justify-center gap-3">
                 <div className="w-12 h-12 rounded-full border-4 border-cyan-400 border-t-transparent animate-spin"></div>
-                <div className="font-mono text-sm text-cyan-300 font-bold tracking-wider animate-pulse">
-                  PYTORCH MODEL ANALYZING CAPTURED SIGN...
+                <div className="font-mono text-sm text-cyan-300 font-bold tracking-wider">
+                  ANALYZING SIGN PHOTO...
                 </div>
                 <div className="font-mono text-xs text-slate-400">
-                  MobileNetV2 Residual Network • 108 Indian RTO Classes
+                  PyTorch 108 Indian RTO Classes
                 </div>
               </div>
             )}
@@ -1060,8 +1082,10 @@ export const AIStudioView: React.FC = () => {
               />
             ) : null}
 
-            {/* Holographic Scrim / HUD Layer */}
-            <div className="absolute inset-0 bg-gradient-to-t from-[#070B14]/80 via-transparent to-[#070B14]/40 pointer-events-none"></div>
+            {/* Holographic Scrim / HUD Layer - Only for simulated stream, never darken live webcam */}
+            {activeMode === 'stream' && (
+              <div className="absolute inset-0 bg-gradient-to-t from-[#070B14]/80 via-transparent to-[#070B14]/40 pointer-events-none"></div>
+            )}
 
             {/* Vector Projection: Trajectory Lane Lines (Simulated Highway Stream Only) */}
             {activeMode === 'stream' && (
@@ -1117,33 +1141,37 @@ export const AIStudioView: React.FC = () => {
               </svg>
             )}
 
-            {/* Top-Left Live Record Telemetry Pill */}
-            <div className="absolute top-4 left-4 flex items-center gap-2 bg-[#070e1c]/85 backdrop-blur-md px-3 py-1.5 rounded-lg shadow-md border border-white/10 pointer-events-none">
-              <span className="w-2.5 h-2.5 rounded-full bg-red-400 animate-pulse"></span>
-              <span className="font-mono text-xs text-white tracking-wider">LIVE INFERENCE</span>
-              <span className="text-slate-500">|</span>
-              <span className="font-mono text-xs text-cyan-400 font-semibold">PYTORCH RT ACCEL</span>
-            </div>
+            {/* Top-Left Live Record Telemetry Pill (Simulated and Upload Only) */}
+            {activeMode !== 'webcam' && (
+              <div className="absolute top-4 left-4 flex items-center gap-2 bg-[#070e1c]/85 backdrop-blur-md px-3 py-1.5 rounded-lg shadow-md border border-white/10 pointer-events-none">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-400 animate-pulse"></span>
+                <span className="font-mono text-xs text-white tracking-wider">LIVE INFERENCE</span>
+                <span className="text-slate-500">|</span>
+                <span className="font-mono text-xs text-cyan-400 font-semibold">PYTORCH RT ACCEL</span>
+              </div>
+            )}
 
-            {/* Top-Right Optical Sensor Diagnostic Box */}
-            <div className="absolute top-4 right-4 bg-[#070e1c]/85 backdrop-blur-md p-3 rounded-lg shadow-md border border-white/10 pointer-events-none space-y-0.5 text-right font-mono text-[11px]">
-              <div className="text-white flex items-center justify-end gap-1.5">
-                <span className="text-slate-400">OPTICAL:</span>
-                <span className="text-blue-400 font-medium">Sony Starvis IMX678</span>
+            {/* Top-Right Optical Sensor Diagnostic Box - Only for simulated stream */}
+            {activeMode === 'stream' && (
+              <div className="absolute top-4 right-4 bg-[#070e1c]/85 backdrop-blur-md p-3 rounded-lg shadow-md border border-white/10 pointer-events-none space-y-0.5 text-right font-mono text-[11px]">
+                <div className="text-white flex items-center justify-end gap-1.5">
+                  <span className="text-slate-400">OPTICAL:</span>
+                  <span className="text-blue-400 font-medium">Sony Starvis IMX678</span>
+                </div>
+                <div className="text-white flex items-center justify-end gap-1.5">
+                  <span className="text-slate-400">RES:</span>
+                  <span>3840×2160 UHD</span>
+                </div>
+                <div className="text-white flex items-center justify-end gap-1.5">
+                  <span className="text-slate-400">FPS:</span>
+                  <span className="text-emerald-400">59.84 CONST</span>
+                </div>
+                <div className="text-white flex items-center justify-end gap-1.5">
+                  <span className="text-slate-400">EXP:</span>
+                  <span>1/120s Auto (f/1.8)</span>
+                </div>
               </div>
-              <div className="text-white flex items-center justify-end gap-1.5">
-                <span className="text-slate-400">RES:</span>
-                <span>3840×2160 UHD</span>
-              </div>
-              <div className="text-white flex items-center justify-end gap-1.5">
-                <span className="text-slate-400">FPS:</span>
-                <span className="text-emerald-400">59.84 CONST</span>
-              </div>
-              <div className="text-white flex items-center justify-end gap-1.5">
-                <span className="text-slate-400">EXP:</span>
-                <span>1/120s Auto (f/1.8)</span>
-              </div>
-            </div>
+            )}
 
             {/* DYNAMIC RETICLE / TARGET LOCK */}
             {(() => {
@@ -1156,7 +1184,31 @@ export const AIStudioView: React.FC = () => {
               const widthPct = Math.max(8, Math.min(65, (bw / fw) * 100));
               const heightPct = Math.max(8, Math.min(65, (bh / fh) * 100));
 
-              if (activeMode === 'webcam' || activeMode === 'upload') {
+              if (activeMode === 'webcam') {
+                // When in live webcam mode: keep scanning view 100% clean, NO front animations!
+                if (isConfirmed && livePrediction.raw_class_id >= 0) {
+                  return (
+                    <div
+                      className="absolute pointer-events-none z-20"
+                      style={{
+                        top: `${topPct}%`,
+                        left: `${leftPct}%`,
+                        width: `${widthPct}%`,
+                        height: `${heightPct}%`,
+                      }}
+                    >
+                      <div className="relative w-full h-full rounded border-2 border-emerald-400 bg-emerald-500/10 shadow-lg"></div>
+                      <div className="absolute -top-7 left-0 whitespace-nowrap bg-[#070e1c]/95 border border-emerald-400 px-2.5 py-0.5 rounded shadow flex items-center gap-1.5 font-mono text-[11px]">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <span className="text-white font-bold">{livePrediction.sign_name}</span>
+                        <span className="text-emerald-400 font-bold">{livePrediction.confidence}%</span>
+                      </div>
+                    </div>
+                  );
+                }
+                // In scanning/aiming mode: NO front animations or crosshairs blocking the lens!
+                return null;
+              } else if (activeMode === 'upload') {
                 if (isConfirmed) {
                   return (
                     <div
@@ -1168,78 +1220,17 @@ export const AIStudioView: React.FC = () => {
                         height: `${heightPct}%`,
                       }}
                     >
-                      <div className="relative w-full h-full rounded-sm shadow-[0_0_20px_rgba(16,185,129,0.7)] bg-emerald-500/15 border-2 border-emerald-400">
-                        <span className="absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-emerald-300"></span>
-                        <span className="absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-emerald-300"></span>
-                        <span className="absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-emerald-300"></span>
-                        <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-emerald-300"></span>
-                        <div className="absolute inset-0 m-auto w-2 h-2 rounded-full bg-emerald-400 animate-ping"></div>
-                      </div>
-
+                      <div className="relative w-full h-full rounded-sm shadow-[0_0_20px_rgba(16,185,129,0.7)] bg-emerald-500/15 border-2 border-emerald-400"></div>
                       <div className="absolute -top-8 left-0 whitespace-nowrap bg-[#070e1c]/95 border border-emerald-400 backdrop-blur-lg px-2.5 py-1 rounded shadow-lg flex items-center gap-1.5 font-mono text-[11px]">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                         <span className="text-white font-semibold">[{livePrediction.sign_name}]</span>
                         <span className="text-emerald-400 font-bold">{livePrediction.confidence}%</span>
-                        <span className="text-slate-400">• Confirmed Active</span>
-                      </div>
-                    </div>
-                  );
-                } else if (livePrediction.raw_class_id >= 0 && (livePrediction.stage_step === 1 || livePrediction.stage_step === 2)) {
-                  // Stage 1 (Analyzing) or Stage 2 (Searching Records) Visual Reticle
-                  const isStage2 = livePrediction.stage_step === 2;
-                  const borderCol = isStage2 ? 'border-cyan-400' : 'border-amber-400';
-                  const bgCol = isStage2 ? 'bg-cyan-500/15' : 'bg-amber-500/15';
-                  const textCol = isStage2 ? 'text-cyan-400' : 'text-amber-400';
-                  const dotCol = isStage2 ? 'bg-cyan-400' : 'bg-amber-400';
-                  return (
-                    <div
-                      className="absolute pointer-events-none transition-all duration-150 z-20"
-                      style={{
-                        top: `${topPct}%`,
-                        left: `${leftPct}%`,
-                        width: `${widthPct}%`,
-                        height: `${heightPct}%`,
-                      }}
-                    >
-                      <div className={`relative w-full h-full rounded-sm border-2 ${borderCol} ${bgCol} shadow-lg`}>
-                        <span className={`absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 ${borderCol}`}></span>
-                        <span className={`absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 ${borderCol}`}></span>
-                        <span className={`absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 ${borderCol}`}></span>
-                        <span className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 ${borderCol}`}></span>
-                        <div className={`absolute inset-0 m-auto w-2 h-2 rounded-full ${dotCol} animate-pulse`}></div>
-                      </div>
-
-                      <div className={`absolute -top-8 left-0 whitespace-nowrap bg-[#070e1c]/95 border ${borderCol} backdrop-blur-lg px-2.5 py-1 rounded shadow-lg flex items-center gap-1.5 font-mono text-[11px]`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${dotCol} animate-ping`}></span>
-                        <span className={`${textCol} font-bold`}>
-                          {isStage2 ? 'STAGE 2: MATCHING 108 RECORDS' : 'STAGE 1: ANALYZING SIGN VISUALS'}
-                        </span>
-                        <span className="text-white font-semibold">[{livePrediction.sign_name}]</span>
-                        <span className="text-slate-400">• {livePrediction.confidence}%</span>
-                      </div>
-                    </div>
-                  );
-                } else {
-                  // Aiming / Standby Reticle
-                  return (
-                    <div className="absolute top-[20%] left-[25%] w-[50%] h-[60%] pointer-events-none flex flex-col items-center justify-center z-20">
-                      <div className="relative w-full h-full rounded-2xl border-2 border-dashed border-cyan-400/50 bg-cyan-950/15 flex items-center justify-center">
-                        <span className="absolute -top-1 -left-1 w-6 h-6 border-t-2 border-l-2 border-cyan-400"></span>
-                        <span className="absolute -top-1 -right-1 w-6 h-6 border-t-2 border-r-2 border-cyan-400"></span>
-                        <span className="absolute -bottom-1 -left-1 w-6 h-6 border-b-2 border-l-2 border-cyan-400"></span>
-                        <span className="absolute -bottom-1 -right-1 w-6 h-6 border-b-2 border-r-2 border-cyan-400"></span>
-                        
-                        <div className="w-8 h-0.5 bg-cyan-400/50"></div>
-                        <div className="h-8 w-0.5 bg-cyan-400/50 absolute"></div>
-
-                        <div className="absolute bottom-3 bg-[#070e1c]/90 border border-cyan-400/40 px-3.5 py-1 rounded-full font-mono text-[11px] text-cyan-300 tracking-wide flex items-center gap-2 shadow-lg">
-                          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                          <span>KEEP ROAD SIGN INSIDE RETICLE (~30-60 CM / 1-2 FT)</span>
-                        </div>
+                        <span className="text-slate-400">• Confirmed</span>
                       </div>
                     </div>
                   );
                 }
+                return null;
               } else {
                 // Default Simulated Dashcam Reticle
                 return (
@@ -1262,99 +1253,8 @@ export const AIStudioView: React.FC = () => {
               }
             })()}
 
-            {/* LIVE VOICE ADVISORY BROADCAST HUD BANNER */}
-            {lastVoiceSpoken && (
-              <div className="absolute bottom-14 inset-x-3 z-30 bg-[#070e1c]/95 border border-cyan-400/50 backdrop-blur-xl p-3 rounded-xl shadow-[0_0_24px_rgba(34,211,238,0.35)] flex items-center justify-between animate-fadeIn transition-all">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 shrink-0">
-                    <span className="material-symbols-outlined text-xl animate-pulse">volume_up</span>
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-cyan-400 uppercase font-bold tracking-wider">
-                        PC WEBCAM VOICE ALERT • [{lastVoiceSpoken.lang.toUpperCase()}]
-                      </span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                      <span className="font-mono text-[9px] text-slate-400 truncate max-w-[120px]">{lastVoiceSpoken.signName}</span>
-                    </div>
-                    <p className="font-body-sm text-xs text-white font-medium truncate sm:whitespace-normal">
-                      "{lastVoiceSpoken.text}"
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => speechService.speak(lastVoiceSpoken.text, 'WARNING', lastVoiceSpoken.lang, 'MANUAL')}
-                    className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-mono text-cyan-300 transition-colors flex items-center gap-1.5 border border-cyan-400/30"
-                    title="Re-play Voice Announcement"
-                  >
-                    <span className="material-symbols-outlined text-sm">replay</span>
-                    <span className="hidden sm:inline">Repeat</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Bottom In-Viewport Controls Overlay */}
-            {activeMode === 'webcam' ? (
-              <div className="absolute bottom-3 inset-x-3 z-30 bg-[#070e1c]/90 border border-cyan-500/30 backdrop-blur-xl px-4 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-2 shadow-2xl">
-                <div className="flex items-center gap-2">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isSnapshotFrozen ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`}></span>
-                  <span className="font-mono text-xs text-white font-semibold">
-                    {isSnapshotFrozen ? 'PHOTO CAPTURED & ANALYZED' : 'LIVE CAMERA VIEW'}
-                  </span>
-                  <span className="text-slate-500 hidden sm:inline">•</span>
-                  <span className="font-mono text-[11px] text-slate-300 hidden sm:inline">
-                    {isSnapshotFrozen ? (livePrediction?.is_confirmed ? `Locked: ${livePrediction.sign_name}` : 'Awaiting sign') : 'Aim sign inside box'}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {!isSnapshotFrozen ? (
-                    <button
-                      onClick={captureAndAnalyzeSnapshot}
-                      disabled={isCapturingSnapshot}
-                      className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-xs font-bold transition-all shadow-[0_0_16px_rgba(34,211,238,0.4)] flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-base">photo_camera</span>
-                      <span>Take Picture & Sound Alert</span>
-                      <kbd className="hidden md:inline px-1.5 py-0.5 rounded bg-black/40 text-[10px] text-cyan-200 font-sans border border-cyan-400/30">Space</kbd>
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        onClick={resumeLiveStream}
-                        className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-mono text-xs font-semibold border border-cyan-400/30 transition-all flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-sm">videocam</span>
-                        <span>Resume Live Feed</span>
-                      </button>
-                      <button
-                        onClick={captureAndAnalyzeSnapshot}
-                        disabled={isCapturingSnapshot}
-                        className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-mono text-xs font-bold transition-all shadow flex items-center gap-1.5 active:scale-95 cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-sm">refresh</span>
-                        <span>Retake Picture</span>
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {livePrediction?.is_confirmed && (
-                    <button
-                      onClick={() => speakWebcamDetection(livePrediction, true)}
-                      className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold border border-emerald-400/40 transition-colors flex items-center gap-1.5 cursor-pointer"
-                      title="Replay statutory speech alert"
-                    >
-                      <span className="material-symbols-outlined text-sm">volume_up</span>
-                      <span className="hidden sm:inline">Play Alert</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            ) : (
+            {/* Bottom Scrubber for Simulated Video Player Only */}
+            {activeMode === 'stream' && (
               <div className="absolute bottom-3 inset-x-3 bg-[#070e1c]/80 border border-white/10 backdrop-blur-xl px-4 py-2 rounded-xl flex items-center justify-between shadow-lg">
                 <div className="flex items-center gap-3">
                   <button
@@ -1381,6 +1281,94 @@ export const AIStudioView: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* WEBCAM VOICE ALERT STRIP (Placed below video, never blocking the camera) */}
+          {activeMode === 'webcam' && lastVoiceSpoken && (
+            <div className="bg-[#10203B]/95 border border-cyan-400/40 backdrop-blur-xl p-3.5 rounded-2xl shadow-lg flex items-center justify-between gap-3 transition-all">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 shrink-0">
+                  <span className="material-symbols-outlined text-xl">volume_up</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-cyan-400 uppercase font-bold tracking-wider">
+                      PC WEBCAM VOICE ALERT • [{lastVoiceSpoken.lang.toUpperCase()}]
+                    </span>
+                    <span className="font-mono text-[10px] text-slate-400 truncate">{lastVoiceSpoken.signName}</span>
+                  </div>
+                  <p className="font-body-sm text-xs text-white font-medium truncate sm:whitespace-normal">
+                    "{lastVoiceSpoken.text}"
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => speechService.speak(lastVoiceSpoken.text, 'WARNING', lastVoiceSpoken.lang, 'MANUAL')}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-mono text-cyan-300 transition-colors flex items-center gap-1.5 border border-cyan-400/30 cursor-pointer shrink-0"
+                title="Re-play Voice Announcement"
+              >
+                <span className="material-symbols-outlined text-sm">replay</span>
+                <span>Repeat</span>
+              </button>
+            </div>
+          )}
+
+          {/* DEDICATED WEBCAM CONTROL BAR (Placed below video, completely unobstructed view) */}
+          {activeMode === 'webcam' && (
+            <div className="bg-[#10203B]/90 border border-cyan-500/30 backdrop-blur-xl p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-xl">
+              <div className="flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full ${isSnapshotFrozen ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`}></span>
+                <span className="font-mono text-sm text-white font-bold">
+                  {isSnapshotFrozen ? 'PHOTO CAPTURED & ANALYZED' : 'LIVE SCANNING ACTIVE'}
+                </span>
+                <span className="text-slate-500 hidden sm:inline">•</span>
+                <span className="font-mono text-xs text-slate-300 hidden sm:inline">
+                  {isSnapshotFrozen ? (livePrediction?.is_confirmed ? `Detected: ${livePrediction.sign_name}` : 'Inspection Complete') : 'Hold traffic sign in front of camera'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                {!isSnapshotFrozen ? (
+                  <button
+                    onClick={captureAndAnalyzeSnapshot}
+                    disabled={isCapturingSnapshot}
+                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-sm font-bold transition-all shadow-[0_0_20px_rgba(34,211,238,0.4)] flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-xl">photo_camera</span>
+                    <span>Take Picture & Analyze</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={resumeLiveStream}
+                      className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-mono text-xs font-bold border border-cyan-400/40 transition-all flex items-center gap-2 cursor-pointer shadow"
+                    >
+                      <span className="material-symbols-outlined text-base">videocam</span>
+                      <span>Resume Live Feed</span>
+                    </button>
+                    <button
+                      onClick={captureAndAnalyzeSnapshot}
+                      disabled={isCapturingSnapshot}
+                      className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-mono text-xs font-bold transition-all shadow flex items-center gap-2 active:scale-95 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">refresh</span>
+                      <span>Retake Picture</span>
+                    </button>
+                  </>
+                )}
+
+                {livePrediction?.is_confirmed && (
+                  <button
+                    onClick={() => speakWebcamDetection(livePrediction, true)}
+                    className="px-3.5 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold border border-emerald-400/40 transition-colors flex items-center gap-1.5 cursor-pointer"
+                    title="Replay speech alert"
+                  >
+                    <span className="material-symbols-outlined text-base">volume_up</span>
+                    <span>Replay</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Optical Telemetry Auxiliary Strip */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1814,6 +1802,66 @@ export const AIStudioView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Backend API Connection Modal */}
+      {showApiModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#10203B] border border-cyan-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-cyan-400">dns</span>
+                <h3 className="font-heading font-bold text-lg text-white">Backend API Server</h3>
+              </div>
+              <button
+                onClick={() => setShowApiModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Set the live backend server URL for your AI model and voice features. If hosted on Render, paste your Render URL ending in <code className="text-cyan-300 bg-black/40 px-1 py-0.5 rounded">/api</code>.
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono text-slate-400 uppercase">Live API Endpoint</label>
+              <input
+                type="text"
+                value={customApiUrlInput}
+                onChange={(e) => setCustomApiUrlInput(e.target.value)}
+                placeholder="https://aerovision-api.onrender.com/api"
+                className="w-full bg-[#070e1c] border border-white/15 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setCustomApiUrl('');
+                  setCustomApiUrlInput('/api');
+                  toast.info('Reset API URL to default (/api)');
+                  setShowApiModal(false);
+                }}
+                className="px-3 py-2 rounded-xl text-xs font-mono text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                Reset Default
+              </button>
+              <button
+                onClick={() => {
+                  const cleaned = customApiUrlInput.trim();
+                  setCustomApiUrl(cleaned);
+                  toast.success('Connected to Backend API: ' + (cleaned || '/api'));
+                  setShowApiModal(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-xs font-bold transition-all shadow-md cursor-pointer"
+              >
+                Save & Connect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

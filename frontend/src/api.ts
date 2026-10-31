@@ -1,7 +1,23 @@
 // frontend/src/api.ts
 // Unified API client for AeroVision Platform
 
-export const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+export function getApiBase(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('aerovision_custom_api');
+    if (custom) return custom.replace(/\/+$/, '');
+  }
+  return (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+}
+
+export function setCustomApiUrl(url: string) {
+  if (!url) {
+    localStorage.removeItem('aerovision_custom_api');
+  } else {
+    localStorage.setItem('aerovision_custom_api', url.trim().replace(/\/+$/, ''));
+  }
+}
+
+export const API_BASE = getApiBase();
 
 export function getStoredToken(): string | null {
   return localStorage.getItem('aerovision_token');
@@ -27,7 +43,7 @@ async function request(endpoint: string, options: RequestInit = {}) {
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${getApiBase()}${endpoint}`, {
     ...options,
     headers,
   });
@@ -130,7 +146,7 @@ export const api = {
   },
   uploadVideo: (formData: FormData) => request('/vault/videos/upload', { method: 'POST', body: formData }),
   getVideoDetails: (id: number) => request(`/vault/videos/${id}`),
-  getVideoStreamUrl: (id: number) => `${API_BASE}/vault/videos/${id}/stream`,
+  getVideoStreamUrl: (id: number) => `${getApiBase()}/vault/videos/${id}/stream`,
   addBookmark: (id: number, data: any) => request(`/vault/videos/${id}/bookmark`, { method: 'POST', body: JSON.stringify(data) }),
   deleteVideo: (id: number) => request(`/vault/videos/${id}`, { method: 'DELETE' }),
 
