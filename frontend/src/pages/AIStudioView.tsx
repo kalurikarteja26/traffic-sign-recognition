@@ -123,10 +123,10 @@ export const AIStudioView: React.FC = () => {
     const rawCid = Number(res.primary_prediction.class_id);
     const rawConf = Math.round(res.primary_prediction.confidence * 1000) / 10;
     const rawBox: [number, number, number, number] = res.bounding_box || [160, 100, 320, 260];
-    const isDetected = Boolean(res.is_detected !== false && rawCid >= 0 && rawConf >= 25);
+    const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 50);
 
-    // Instant confirmation bypass for direct picture captures and verified model predictions
-    if (isSnapshot || res.primary_prediction.is_confirmed) {
+    // Instant confirmation bypass for direct picture captures and verified model predictions with high confidence
+    if (isSnapshot && res.primary_prediction?.is_confirmed && rawConf >= 75) {
       const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === rawCid) || ALL_108_RTO_SIGNS[rawCid];
       const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
       const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (rawCid === 0 || rawCid === 2 ? 'CRITICAL' : 'WARNING'));
@@ -305,8 +305,8 @@ export const AIStudioView: React.FC = () => {
       isConfirmed = true;
       status = 'CONFIRMED_ACTIVE';
       bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (voteCount >= 3 && bestAvgConf >= 30) {
-      // Confirmed only after multi-frame observation consensus
+    } else if (voteCount >= 3 && bestAvgConf >= 75) {
+      // Confirmed only after multi-frame observation consensus at high certainty (>=75%)
       stageStep = 3;
       stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
       stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
@@ -319,7 +319,7 @@ export const AIStudioView: React.FC = () => {
         confidence: bestAvgConf,
         lockedUntil: now + 1400,
       };
-    } else if (voteCount === 2) {
+    } else if (voteCount >= 2 && bestAvgConf >= 55) {
       // Stage 2: Cross-referencing 108 records
       stageStep = 2;
       stageTitle = 'STAGE 2: MATCHING 108 RTO RECORDS';
@@ -464,6 +464,7 @@ export const AIStudioView: React.FC = () => {
     if (!signMeta || signMeta.raw_class_id < 0) return;
     if (!voiceAlertsEnabled && !force) return;
     if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
+    if ((signMeta.confidence || 0) < 70 && !force) return; // STRICT GUARD: NEVER SPEAK LOW CONFIDENCE!
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
@@ -1698,7 +1699,7 @@ export const AIStudioView: React.FC = () => {
                 <div className="flex justify-between items-center">
                   <span className="text-slate-400">MODEL CERTAINTY SCORE</span>
                   <span className="text-cyan-400 font-bold">
-                    {livePrediction?.confidence || 0}% (Confirm Threshold: 35.0%)
+                    {livePrediction?.confidence || 0}% (Confirm Threshold: 75.0%)
                   </span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden p-0.5">

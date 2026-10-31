@@ -157,15 +157,15 @@ class AIServiceManager:
             return {"valid": False}
 
         hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
-        mask_r1 = cv2.inRange(hsv, np.array([0, 45, 30]), np.array([14, 255, 255]))
-        mask_r2 = cv2.inRange(hsv, np.array([155, 45, 30]), np.array([180, 255, 255]))
+        mask_r1 = cv2.inRange(hsv, np.array([0, 70, 45]), np.array([12, 255, 255]))
+        mask_r2 = cv2.inRange(hsv, np.array([160, 70, 45]), np.array([180, 255, 255]))
         mask_red = cv2.bitwise_or(mask_r1, mask_r2)
         red_ratio = float((np.sum(mask_r1 > 0) + np.sum(mask_r2 > 0)) / (w * h))
 
-        mask_blue = cv2.inRange(hsv, np.array([85, 40, 50]), np.array([135, 255, 255]))
+        mask_blue = cv2.inRange(hsv, np.array([85, 70, 50]), np.array([135, 255, 255]))
         blue_ratio = float(np.sum(mask_blue > 0) / (w * h))
 
-        mask_yellow = cv2.inRange(hsv, np.array([16, 50, 50]), np.array([36, 255, 255]))
+        mask_yellow = cv2.inRange(hsv, np.array([16, 70, 60]), np.array([36, 255, 255]))
         yellow_ratio = float(np.sum(mask_yellow > 0) / (w * h))
 
         # Geometric Contour & Polygon Analysis
@@ -176,8 +176,10 @@ class AIServiceManager:
         is_circle = False
 
         # Find largest colored contour (red, blue, or yellow)
-        combined_mask = mask_red if red_ratio > 0.06 else (mask_blue if blue_ratio > 0.15 else mask_yellow)
-        cnts, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        combined_mask = mask_red if red_ratio > 0.08 else (mask_blue if blue_ratio > 0.18 else (mask_yellow if yellow_ratio > 0.15 else None))
+        cnts = []
+        if combined_mask is not None:
+            cnts, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if cnts:
             largest = max(cnts, key=cv2.contourArea)
             area = cv2.contourArea(largest)
@@ -206,8 +208,8 @@ class AIServiceManager:
                 elif (num_v in (7, 8, 9) and red_ratio > 0.25) or (num_v >= 6 and circularity > 0.70 and red_ratio > 0.40):
                     is_octagon = True
                     shape_type = "OCTAGON"
-                # Rectangle: 4 vertices, flat top and flat bottom
-                elif num_v == 4 and top_dy < (bh * 0.22) and bot_dy < (bh * 0.22):
+                # Rectangle: 4 vertices, flat top and flat bottom with sign chromatic presence
+                elif num_v == 4 and top_dy < (bh * 0.22) and bot_dy < (bh * 0.22) and (blue_ratio > 0.12 or red_ratio > 0.10 or yellow_ratio > 0.10):
                     shape_type = "RECTANGLE"
                 # Circular: high circularity
                 elif circularity > 0.65 or (num_v >= 6 and circularity > 0.60):
@@ -270,13 +272,18 @@ class AIServiceManager:
         self,
         analysis: Dict[str, Any],
         neural_probs: torch.Tensor,
-        candidate_tag: str = ""
+        candidate_tag: str = "",
+        max_logit: float = 0.0,
+        top2_margin: float = 0.0
     ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Stage 2: Cross-references the visual analysis and neural probabilities
         with the 108 official Indian RTO canonical records.
         Applies geometric constraints, glyph template matching, and chromatic consistency.
         """
+        if max_logit < 0.45:
+            return None, []
+
         top_vals, top_ids = torch.topk(neural_probs, min(15, len(neural_probs)))
         cand_glyph = analysis.get("glyph_mask")
         glyph_pixels = analysis.get("glyph_pixel_count", 0)
@@ -425,8 +432,10 @@ class AIServiceManager:
             else:
                 base_score = prob
 
-            # Prohibit low-probability candidates (<0.35) from being falsely inflated by multipliers
-            if prob < 0.35:
+            # Prohibit low-probability or OOD candidates from being falsely inflated by multipliers
+            if prob < 0.45 or max_logit < 0.45:
+                composite = prob * 0.65
+            elif prob < 0.65:
                 composite = prob * min(1.0, geom_mult) * min(1.0, color_mult)
             else:
                 composite = min(0.995, base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus)
@@ -512,23 +521,19 @@ class AIServiceManager:
         cx, cy = w // 2, h // 2
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 1. Multi-Scale Square Aiming Reticles (Centered on HUD reticle: 35%, 50%, 68%, 88%)
+        # 1. Multi-Scale Square Aiming Reticles (Centered on HUD reticle: 35%, 50%, 68%)
         min_dim = min(h, w)
-        for scale in [0.35, 0.50, 0.68, 0.88]:
+        for scale in [0.35, 0.50, 0.68]:
             side = int(min_dim * scale)
             c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
             candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, f"Reticle {int(scale*100)}%"))
-            if scale in [0.35, 0.50]:
-                iso_crop = self.make_isolated_sign_crop(frame_bgr, cx - side // 2, cy - side // 2, side, side, 1.80)
-                if iso_crop is not None:
-                    candidates.append((cx - side // 2, cy - side // 2, side, side, iso_crop, f"Reticle {int(scale*100)}% Canonical"))
 
         # 2. Dedicated Red Sign Segmentation (Stop, Speed Limits, Prohibitions, Warnings)
         # Includes fragment merging to unify split red rings (severed by phone glare or diagonal slash)
         try:
             hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-            mask_r1 = cv2.inRange(hsv, np.array([0, 40, 25]), np.array([14, 255, 255]))
-            mask_r2 = cv2.inRange(hsv, np.array([150, 40, 25]), np.array([180, 255, 255]))
+            mask_r1 = cv2.inRange(hsv, np.array([0, 75, 45]), np.array([12, 255, 255]))
+            mask_r2 = cv2.inRange(hsv, np.array([155, 75, 45]), np.array([180, 255, 255]))
             mask_red = cv2.bitwise_or(mask_r1, mask_r2)
             k_r = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
             m_red_close = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, k_r)
@@ -537,7 +542,7 @@ class AIServiceManager:
             raw_red_blobs = []
             for c in cnts_r:
                 area = cv2.contourArea(c)
-                if area >= (w * h * 0.003):
+                if area >= (w * h * 0.004):
                     bx, by, bw, bh = cv2.boundingRect(c)
                     raw_red_blobs.append([bx, by, bw, bh])
 
@@ -551,7 +556,7 @@ class AIServiceManager:
                     cx2, cy2 = mb[0] + mb[2] // 2, mb[1] + mb[3] // 2
                     dist = np.hypot(cx1 - cx2, cy1 - cy2)
                     max_dim = max(bw, bh, mb[2], mb[3])
-                    if dist < max_dim * 1.5:
+                    if dist < max_dim * 0.45:
                         x_min = min(bx, mb[0])
                         y_min = min(by, mb[1])
                         x_max = max(bx + bw, mb[0] + mb[2])
@@ -564,24 +569,21 @@ class AIServiceManager:
 
             for bx, by, bw, bh in merged_red:
                 aspect = float(bw) / max(1, bh)
-                if 0.55 <= aspect <= 1.80:
+                if 0.65 <= aspect <= 1.55:
                     cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
-                    side = max(32, int(max(bw, bh) * 1.80))
+                    side = max(32, int(max(bw, bh) * 1.50))
                     c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
                     candidates.append((bx, by, bw, bh, c_crop, "Red Sign Contour"))
-                    iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
+                    iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 1.80)
                     if iso_crop is not None:
                         candidates.append((bx, by, bw, bh, iso_crop, "Red Sign Canonical"))
-                    iso_train = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10, center_offset_y=0.13)
-                    if iso_train is not None:
-                        candidates.append((bx, by, bw, bh, iso_train, "Red Sign Trained Dist"))
         except Exception:
             pass
 
-        # 2. Dedicated Blue Sign Segmentation (Compulsory Arrows, Parking, Info)
+        # 3. Dedicated Blue Sign Segmentation (Compulsory Arrows, Parking, Info)
         # Includes arrow-bridge morphological close and strict vertical-aligned fragment merging
         try:
-            mask_blue = cv2.inRange(hsv, np.array([82, 40, 50]), np.array([132, 255, 255]))
+            mask_blue = cv2.inRange(hsv, np.array([85, 70, 50]), np.array([132, 255, 255]))
             k_b = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19))
             m_blue_close = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, k_b)
             cnts_b, _ = cv2.findContours(m_blue_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -603,7 +605,7 @@ class AIServiceManager:
                     cx2 = mb[0] + mb[2] // 2
                     if abs(cx1 - cx2) < min(bw, mb[2]) * 0.35:
                         y_gap = max(0, by - (mb[1] + mb[3]), mb[1] - (by + bh))
-                        if y_gap < min(bh, mb[3]) * 1.0:
+                        if y_gap < min(bh, mb[3]) * 0.8:
                             x_min, y_min = min(bx, mb[0]), min(by, mb[1])
                             x_max, y_max = max(bx + bw, mb[0] + mb[2]), max(by + bh, mb[1] + mb[3])
                             mb[0], mb[1], mb[2], mb[3] = x_min, y_min, x_max - x_min, y_max - y_min
@@ -614,20 +616,20 @@ class AIServiceManager:
 
             for bx, by, bw, bh in merged_blue:
                 aspect = float(bw) / max(1, bh)
-                if 0.55 <= aspect <= 1.80:
+                if 0.65 <= aspect <= 1.55:
                     cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
-                    side = max(32, int(max(bw, bh) * 1.80))
+                    side = max(32, int(max(bw, bh) * 1.50))
                     c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
                     candidates.append((bx, by, bw, bh, c_crop, "Blue Sign Contour"))
-                    iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
+                    iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 1.80)
                     if iso_crop is not None:
                         candidates.append((bx, by, bw, bh, iso_crop, "Blue Sign Canonical"))
         except Exception:
             pass
 
-        # 3. Dedicated Yellow Sign Segmentation (Cautionary / Warning Signs)
+        # 4. Dedicated Yellow Sign Segmentation (Cautionary / Warning Signs)
         try:
-            mask_yellow = cv2.inRange(hsv, np.array([16, 50, 50]), np.array([36, 255, 255]))
+            mask_yellow = cv2.inRange(hsv, np.array([16, 70, 60]), np.array([36, 255, 255]))
             k_y = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
             m_yellow_close = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, k_y)
             cnts_y, _ = cv2.findContours(m_yellow_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -636,12 +638,12 @@ class AIServiceManager:
                 if (w * h * 0.005) <= area <= (w * h * 0.85):
                     bx, by, bw, bh = cv2.boundingRect(cnt)
                     aspect = float(bw) / max(1, bh)
-                    if 0.55 <= aspect <= 1.80:
+                    if 0.65 <= aspect <= 1.55:
                         cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
-                        side = max(32, int(max(bw, bh) * 1.80))
+                        side = max(32, int(max(bw, bh) * 1.50))
                         c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
                         candidates.append((bx, by, bw, bh, c_crop, "Yellow Sign Contour"))
-                        iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 2.10)
+                        iso_crop = self.make_isolated_sign_crop(frame_bgr, bx, by, bw, bh, 1.80)
                         if iso_crop is not None:
                             candidates.append((bx, by, bw, bh, iso_crop, "Yellow Sign Canonical"))
         except Exception:
@@ -831,8 +833,21 @@ class AIServiceManager:
 
             for i, (x, y, bw, bh, crop, sq, tag) in enumerate(valid_meta):
                 probs_i = all_probs[i]
+                cand_logits = logits[i]
+                cand_max_logit = cand_logits.max().item()
+                top2_logits = torch.topk(cand_logits, 2)[0]
+                cand_margin = (top2_logits[0] - top2_logits[1]).item()
+
+                # Strict Out-Of-Distribution / Background Filter:
+                # Real traffic signs produce positive max logits (0.65 to 3.5+).
+                # Unrelated room backgrounds, faces, walls, curtains produce negative or near-zero logits.
+                if cand_max_logit < 0.45:
+                    continue
+
                 analysis = self.analyze_sign_candidate(sq)
-                winner, top5_recs = self.search_records_and_verify(analysis, probs_i, tag)
+                winner, top5_recs = self.search_records_and_verify(
+                    analysis, probs_i, tag, max_logit=cand_max_logit, top2_margin=cand_margin
+                )
                 if winner and winner["composite_score"] > best_quality:
                     best_quality = winner["composite_score"]
                     best_winner = winner
@@ -845,7 +860,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if best_winner is None or best_quality < 0.28:
+        if best_winner is None or best_quality < 0.50:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {
@@ -899,15 +914,15 @@ class AIServiceManager:
         # 3-Stage Decision Pipeline:
         # Stage 1: ANALYZING (candidate sighted; analyzing geometry, border color & glyph contour)
         # Stage 2: SEARCHING_RECORDS (cross-referencing candidate with 108 Indian RTO records)
-        # Stage 3: CONFIRMED (verified match confirmed from records)
+        # Stage 3: CONFIRMED (verified match confirmed from records at >=78% certainty)
         margin = round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
-        if conf < 0.28:
+        if conf < 0.65:
             analysis_stage = "ANALYZING"
             stage_step = 1
             stage_title = "STAGE 1: ANALYZING SIGN VISUALS"
             stage_desc = "Inspecting geometry, chromatic contours and glyph profile..."
             is_confirmed = False
-        elif conf < 0.38 and margin < 0.12:
+        elif conf < 0.78 or margin < 0.15:
             analysis_stage = "SEARCHING_RECORDS"
             stage_step = 2
             stage_title = "STAGE 2: MATCHING 108 RTO RECORDS"
