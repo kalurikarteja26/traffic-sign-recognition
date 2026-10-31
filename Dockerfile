@@ -8,7 +8,7 @@ FROM python:3.11-slim
 # Set environment flags
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8000 \
+    PORT=10000 \
     ENVIRONMENT=production
 
 # Install system dependencies (ffmpeg for video streaming, curl for health checks)
@@ -28,18 +28,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY backend/ ./backend/
 COPY src/ ./src/
 COPY models/ ./models/
+COPY traffic_safety_agents/ ./traffic_safety_agents/
 COPY traffic_safety_agents.py .
 
 # Create required directories for uploads and persistent data
 RUN mkdir -p uploads/videos uploads/challans uploads/snapshots uploads/tts_cache
 
-# Expose port (Render/Railway dynamically inject $PORT)
-EXPOSE 8000
+# Expose ports
+EXPOSE 10000 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/ || exit 1
+    CMD curl -f http://localhost:${PORT:-10000}/ || exit 1
 
 # Launch FastAPI ASGI server
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
-
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
