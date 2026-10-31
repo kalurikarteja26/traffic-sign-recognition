@@ -433,12 +433,12 @@ class AIServiceManager:
                 base_score = prob
 
             # Prohibit low-probability or OOD candidates from being falsely inflated by multipliers
-            if prob < 0.45 or max_logit < 0.45:
-                composite = prob * 0.65
-            elif prob < 0.65:
-                composite = prob * min(1.0, geom_mult) * min(1.0, color_mult)
-            else:
+            if (prob >= 0.45 and top2_margin >= 0.8) or prob >= 0.60:
                 composite = min(0.995, base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus)
+            elif prob < 0.35:
+                composite = prob * 0.65
+            else:
+                composite = prob * min(1.0, geom_mult) * min(1.0, color_mult)
 
             scored.append({
                 "class_id": cid,
@@ -839,9 +839,9 @@ class AIServiceManager:
                 cand_margin = (top2_logits[0] - top2_logits[1]).item()
 
                 # Strict Out-Of-Distribution / Background Filter:
-                # Real traffic signs produce positive max logits (0.65 to 3.5+).
-                # Unrelated room backgrounds, faces, walls, curtains produce negative or near-zero logits.
-                if cand_max_logit < 0.45:
+                # Real traffic signs produce positive max logits (0.45 to 3.5+) OR high logit margin (margin >= 1.2).
+                # Unrelated room backgrounds, faces, walls, curtains produce negative logits with low margin.
+                if cand_max_logit < 0.45 and not (cand_margin >= 1.20 and cand_max_logit >= -0.30):
                     continue
 
                 analysis = self.analyze_sign_candidate(sq)
@@ -914,15 +914,15 @@ class AIServiceManager:
         # 3-Stage Decision Pipeline:
         # Stage 1: ANALYZING (candidate sighted; analyzing geometry, border color & glyph contour)
         # Stage 2: SEARCHING_RECORDS (cross-referencing candidate with 108 Indian RTO records)
-        # Stage 3: CONFIRMED (verified match confirmed from records at >=78% certainty)
+        # Stage 3: CONFIRMED (verified match confirmed from records at >=70% certainty)
         margin = round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
-        if conf < 0.65:
+        if conf < 0.55:
             analysis_stage = "ANALYZING"
             stage_step = 1
             stage_title = "STAGE 1: ANALYZING SIGN VISUALS"
             stage_desc = "Inspecting geometry, chromatic contours and glyph profile..."
             is_confirmed = False
-        elif conf < 0.78 or margin < 0.15:
+        elif conf < 0.70 or margin < 0.15:
             analysis_stage = "SEARCHING_RECORDS"
             stage_step = 2
             stage_title = "STAGE 2: MATCHING 108 RTO RECORDS"

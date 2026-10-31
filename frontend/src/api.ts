@@ -56,12 +56,23 @@ async function request(endpoint: string, options: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    let errorDetail = 'An unexpected error occurred.';
+    let errorDetail = `Server returned status ${response.status} (${response.statusText || 'Error'})`;
     try {
-      const errJson = await response.json();
-      errorDetail = errJson.detail || errJson.message || JSON.stringify(errJson);
+      const text = await response.text();
+      if (text) {
+        try {
+          const errJson = JSON.parse(text);
+          errorDetail = errJson.detail || errJson.message || JSON.stringify(errJson);
+        } catch {
+          if (response.status === 502 || response.status === 503 || response.status === 504) {
+            errorDetail = 'Backend server is starting up or waking on Render (free tier cold start). Please wait 20 seconds and retry.';
+          } else {
+            errorDetail = text.slice(0, 200);
+          }
+        }
+      }
     } catch {
-      errorDetail = await response.text();
+      // Response stream could not be read
     }
     throw new Error(errorDetail);
   }
