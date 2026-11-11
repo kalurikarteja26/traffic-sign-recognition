@@ -399,6 +399,23 @@ class AIServiceManager:
         canvas[yo:yo + ph, xo:xo + pw] = sign_patch
         return canvas
 
+    def has_sign_chroma(self, crop: np.ndarray) -> bool:
+        """
+        Validates whether a candidate crop contains genuine Indian RTO sign color presence
+        (Red, Blue, or Yellow). Rejects plain walls, ceilings, faces, and indoor background.
+        """
+        if crop is None or crop.size < 64:
+            return False
+        chsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mr1 = cv2.inRange(chsv, np.array([0, 48, 38]), np.array([12, 255, 255]))
+        mr2 = cv2.inRange(chsv, np.array([150, 48, 38]), np.array([180, 255, 255]))
+        mb = cv2.inRange(chsv, np.array([92, 48, 38]), np.array([135, 255, 255]))
+        my = cv2.inRange(chsv, np.array([15, 42, 42]), np.array([36, 255, 255]))
+        
+        tot_pixels = crop.shape[0] * crop.shape[1]
+        colored_pixels = np.sum(mr1 > 0) + np.sum(mr2 > 0) + np.sum(mb > 0) + np.sum(my > 0)
+        return (colored_pixels / tot_pixels) >= 0.04
+
     def extract_sign_rois(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int, np.ndarray, str]]:
         """
         Ultra-High-Speed Automotive ADAS Perception Pipeline:
@@ -407,7 +424,7 @@ class AIServiceManager:
         2. Central Driving Horizon Reticle (52%): Optimal standard distance for approaching signs.
         3. Near Field / Dashboard Reticle (78%): For close-up signs or smartphone screens held to the camera.
         4. Far Field Highway Approach Reticle (32%): For distant roadside signs.
-        Eliminates slow CPU HoughCircles and N^2 contour merging for real-time 30+ FPS vehicle speeds.
+        Only regions exhibiting genuine sign chromatic presence are admitted; rejects plain walls and faces.
         """
         h, w = frame_bgr.shape[:2]
         candidates = []
@@ -435,15 +452,18 @@ class AIServiceManager:
                         cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
                         side = max(32, int(max(bw, bh) * 1.45))
                         crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
-                        candidates.append((bx, by, bw, bh, crop, "Chromatic Saliency"))
+                        if self.has_sign_chroma(crop):
+                            candidates.append((bx, by, bw, bh, crop, "Chromatic Saliency"))
         except Exception:
             pass
 
         # 2, 3, 4. Multi-Scale Driving Reticles (Centered on camera road vector)
+        # Strictly gated: Only admit reticle if it contains genuine sign chromatic presence
         for scale, tag in [(0.52, "Driving Horizon"), (0.78, "Near Field"), (0.32, "Highway Distant")]:
             side = int(min_dim * scale)
             c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
-            candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, tag))
+            if self.has_sign_chroma(c_crop):
+                candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, tag))
 
         return candidates
 
@@ -639,7 +659,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if best_winner is None or best_quality < 0.36:
+        if not valid_crops or best_winner is None or best_quality < 0.36:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {

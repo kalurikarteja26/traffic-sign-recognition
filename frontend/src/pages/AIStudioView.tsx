@@ -192,7 +192,7 @@ export const AIStudioView: React.FC = () => {
       };
     }
 
-    if (!isDetected) {
+    if (!isDetected || rawCid < 0 || rawConf < 35) {
       // Standby / Aiming State: When no sign is detected, strictly silence locks & alerts
       activeLockRef.current = null;
       smoothedBoxRef.current = null;
@@ -1192,7 +1192,7 @@ export const AIStudioView: React.FC = () => {
 
               if (activeMode === 'webcam') {
                 // When in live webcam mode: keep scanning view 100% clean, NO front animations!
-                if (isConfirmed && livePrediction.raw_class_id >= 0) {
+                if (isConfirmed && livePrediction.is_detected && livePrediction.raw_class_id >= 0 && (livePrediction.confidence || 0) >= 35) {
                   return (
                     <div
                       className="absolute pointer-events-none z-20"
