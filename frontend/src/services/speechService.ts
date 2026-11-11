@@ -127,6 +127,71 @@ class SpeechService {
   }
 
   /**
+   * Proactively unlock Web Audio, SpeechSynthesis, and HTMLAudio pipelines.
+   * Mobile browsers (Android Chrome, iOS Safari) strictly require AudioContext.resume()
+   * and SpeechSynthesis activation during a user gesture (tap/click/touch) before
+   * camera stream callbacks can play audio alerts.
+   */
+  public async unlockAudio(): Promise<boolean> {
+    try {
+      // 1. Resume / Initialize Web Audio Context
+      const AudioCtxClass =
+        typeof window !== 'undefined'
+          ? window.AudioContext || (window as any).webkitAudioContext
+          : null;
+      if (AudioCtxClass) {
+        if (!this.audioCtx || this.audioCtx.state === 'closed') {
+          this.audioCtx = new AudioCtxClass();
+        }
+        if (this.audioCtx.state === 'suspended') {
+          await this.audioCtx.resume().catch(() => {});
+        }
+        // Play an imperceptible 1-sample silent Web Audio buffer
+        try {
+          const buffer = this.audioCtx.createBuffer(1, 1, 22050);
+          const source = this.audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(this.audioCtx.destination);
+          source.start(0);
+        } catch (_) {}
+      }
+
+      // 2. Resume and prime SpeechSynthesis
+      if (this.synth) {
+        if (this.synth.paused) {
+          try {
+            this.synth.resume();
+          } catch (_) {}
+        }
+        try {
+          const silentUtterance = new SpeechSynthesisUtterance(' ');
+          silentUtterance.volume = 0.01;
+          silentUtterance.rate = 1.0;
+          (window as any).__aerovisionPrimeUtterance = silentUtterance;
+          this.synth.speak(silentUtterance);
+        } catch (_) {}
+      }
+
+      // 3. Prime HTML5 Audio with a 1-sample silent WAV data URI
+      try {
+        const silentWav =
+          'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        const a = new Audio(silentWav);
+        a.volume = 0.01;
+        const p = a.play();
+        if (p !== undefined) {
+          p.catch(() => {});
+        }
+      } catch (_) {}
+
+      return true;
+    } catch (e) {
+      console.warn('[SpeechService] Unlock audio attempt:', e);
+      return false;
+    }
+  }
+
+  /**
    * Set exclusive source lock (e.g. 'CAMERA' when live camera detection is active).
    * Background simulated alerts from other sources will be politely suppressed.
    */
@@ -279,8 +344,8 @@ class SpeechService {
     const now = Date.now();
 
     // Rhythmic Cadence Guard:
-    // If the identical alert was spoken within 12 seconds, suppress it to prevent nagging.
-    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 12000) {
+    // If the identical alert was spoken within 6 seconds, suppress it to prevent nagging.
+    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 6000) {
       return;
     }
 
@@ -465,8 +530,8 @@ class SpeechService {
         if (this.currentSessionId !== sessionId) return;
         this.isSpeaking = false;
         this.currentUtterance = null;
-        // Calm rhythm: 650ms breathing pause before processing next queue item
-        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+        // Calm rhythm: 450ms breathing pause before processing next queue item
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 450);
       };
 
       utterance.onerror = (e) => {
@@ -475,10 +540,19 @@ class SpeechService {
         this.isSpeaking = false;
         this.currentUtterance = null;
         this.notifyVisual(`[SPEECH PLAYBACK ERROR: ${e.error}] ${event.text}`, true);
-        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 400);
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 300);
       };
 
       this.currentUtterance = utterance;
+      // Prevent Chromium / WebKit Garbage Collection bug mid-utterance
+      (window as any).__aerovisionActiveUtterance = utterance;
+
+      if (this.synth.paused) {
+        try {
+          this.synth.resume();
+        } catch (_) {}
+      }
+
       this.synth.speak(utterance);
     } catch (err) {
       if (this.currentSessionId !== sessionId) return;
@@ -609,9 +683,9 @@ class SpeechService {
 
     if (!enText) return;
 
-    // Cadence check: if this alert was just spoken within 12 seconds, do not repeat
+    // Cadence check: if this alert was just spoken within 6 seconds, do not repeat
     const now = Date.now();
-    if (enText === this.lastSpokenText && now - this.lastSpokenTimestamp < 12000) {
+    if (enText === this.lastSpokenText && now - this.lastSpokenTimestamp < 6000) {
       return;
     }
 
@@ -634,8 +708,8 @@ class SpeechService {
       return;
     }
 
-    // 450ms pause
-    await new Promise((r) => setTimeout(r, 450));
+    // 350ms pause
+    await new Promise((r) => setTimeout(r, 350));
     if (this.currentSessionId !== sessionId) {
       onLangChange?.(null);
       return;
@@ -650,8 +724,8 @@ class SpeechService {
         onLangChange?.(null);
         return;
       }
-      // 450ms pause
-      await new Promise((r) => setTimeout(r, 450));
+      // 350ms pause
+      await new Promise((r) => setTimeout(r, 350));
       if (this.currentSessionId !== sessionId) {
         onLangChange?.(null);
         return;
@@ -685,6 +759,21 @@ class SpeechService {
         return;
       }
 
+      let settled = false;
+      const safeResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(safetyTimer);
+        this.currentAudio = null;
+        this.currentUtterance = null;
+        resolve();
+      };
+
+      // Failsafe safety timeout: ensures promise never hangs if mobile browser drops onend event
+      const safetyTimer = setTimeout(() => {
+        safeResolve();
+      }, Math.max(3000, Math.min(9000, text.length * 110)));
+
       const hasNative = this.hasNativeVoiceFor(lang);
       if ((lang === 'te' || lang === 'hi') && !hasNative) {
         // Use streaming audio from backend
@@ -696,31 +785,28 @@ class SpeechService {
           this.currentAudio = audio;
 
           audio.onended = () => {
-            this.currentAudio = null;
-            resolve();
+            safeResolve();
           };
           audio.onerror = () => {
-            this.currentAudio = null;
-            this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+            this.playPhoneticPhrase(text, lang, sessionId).then(safeResolve);
           };
           const p = audio.play();
           if (p !== undefined) {
             p.catch((err) => {
               if (err.name !== 'AbortError') {
-                this.currentAudio = null;
-                this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+                this.playPhoneticPhrase(text, lang, sessionId).then(safeResolve);
               } else {
-                resolve();
+                safeResolve();
               }
             });
           }
         } catch {
-          this.playPhoneticPhrase(text, lang, sessionId).then(resolve);
+          this.playPhoneticPhrase(text, lang, sessionId).then(safeResolve);
         }
       } else {
         // Native SpeechSynthesisUtterance
         if (!this.synth) {
-          resolve();
+          safeResolve();
           return;
         }
         try {
@@ -734,17 +820,23 @@ class SpeechService {
           if (voice) utterance.voice = voice;
 
           utterance.onend = () => {
-            this.currentUtterance = null;
-            resolve();
+            safeResolve();
           };
           utterance.onerror = () => {
-            this.currentUtterance = null;
-            resolve();
+            safeResolve();
           };
           this.currentUtterance = utterance;
+          (window as any).__aerovisionActiveUtterance = utterance;
+
+          if (this.synth.paused) {
+            try {
+              this.synth.resume();
+            } catch (_) {}
+          }
+
           this.synth.speak(utterance);
         } catch {
-          resolve();
+          safeResolve();
         }
       }
     });
@@ -756,6 +848,15 @@ class SpeechService {
         resolve();
         return;
       }
+      let settled = false;
+      const safeResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(safeResolve, Math.max(2500, text.length * 100));
+
       let phoneticText = PHONETIC_MAP[text];
       if (!phoneticText) {
         if (lang === 'te') {
@@ -778,15 +879,21 @@ class SpeechService {
         }
       }
       try {
+        if (this.synth.paused) {
+          try {
+            this.synth.resume();
+          } catch (_) {}
+        }
         const u = new SpeechSynthesisUtterance(phoneticText);
         u.volume = this.settings.volume;
         u.rate = 0.9;
         u.lang = 'en-IN';
-        u.onend = () => resolve();
-        u.onerror = () => resolve();
+        u.onend = safeResolve;
+        u.onerror = safeResolve;
+        (window as any).__aerovisionActiveUtterance = u;
         this.synth.speak(u);
       } catch {
-        resolve();
+        safeResolve();
       }
     });
   }

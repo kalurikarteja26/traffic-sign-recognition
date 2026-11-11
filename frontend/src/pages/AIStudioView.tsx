@@ -82,6 +82,19 @@ export const AIStudioView: React.FC = () => {
     return () => unsub();
   }, []);
 
+  // One-time user gesture audio unlock listener for mobile & desktop browsers (iOS Safari, Android Chrome)
+  useEffect(() => {
+    const handleFirstGesture = () => {
+      speechService.unlockAudio();
+    };
+    window.addEventListener('click', handleFirstGesture, { once: true });
+    window.addEventListener('touchstart', handleFirstGesture, { once: true, passive: true });
+    return () => {
+      window.removeEventListener('click', handleFirstGesture);
+      window.removeEventListener('touchstart', handleFirstGesture);
+    };
+  }, []);
+
   const getCompassDirection = (deg: number): string => {
     const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
     const idx = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
@@ -125,8 +138,12 @@ export const AIStudioView: React.FC = () => {
     const rawBox: [number, number, number, number] = res.bounding_box || [160, 100, 320, 260];
     const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 50);
 
-    // Instant confirmation bypass for direct picture captures and verified model predictions with high confidence
-    if (isSnapshot && res.primary_prediction?.is_confirmed && rawConf >= 65) {
+    const isModelVerified = Boolean(
+      (res.primary_prediction?.is_confirmed || res.is_confirmed) && rawConf >= 58
+    );
+
+    // Instant confirmation path: direct snapshot analysis or model-verified prediction with confident features
+    if ((isSnapshot && rawConf >= 58) || isModelVerified) {
       const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === rawCid) || ALL_108_RTO_SIGNS[rawCid];
       const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
       const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (rawCid === 0 || rawCid === 2 ? 'CRITICAL' : 'WARNING'));
@@ -134,6 +151,13 @@ export const AIStudioView: React.FC = () => {
       const alertType = isInfoSign ? 'INFO' : 'ALERT';
 
       smoothedBoxRef.current = rawBox;
+      activeLockRef.current = {
+        class_id: rawCid,
+        sign_name: signMeta?.name || res.primary_prediction.sign_name,
+        confidence: rawConf,
+        lockedUntil: now + 2000,
+      };
+
       return {
         sign_name: signMeta?.name || res.primary_prediction.sign_name,
         name_te: signMeta?.name_te || res.primary_prediction.name_te,
@@ -171,7 +195,7 @@ export const AIStudioView: React.FC = () => {
     }
 
     if (!isDetected) {
-      // Check if prior confirmed detection is still within warm grace period (600ms)
+      // Check if prior confirmed detection is still within warm grace period (2000ms)
       if (activeLockRef.current && now < activeLockRef.current.lockedUntil) {
         const lockedCid = activeLockRef.current.class_id;
         const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === lockedCid) || ALL_108_RTO_SIGNS[lockedCid];
@@ -201,9 +225,10 @@ export const AIStudioView: React.FC = () => {
 
       // Standby / Aiming State
       smoothedBoxRef.current = null;
-      temporalHistoryRef.current = [];
+      // Retain recent detections within 3.5s window so brief flickers don't reset tracking
+      temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 3500);
       return {
-        sign_name: 'Scanning for Signs...',
+        sign_name: 'Searching for Signs...',
         class_id: 'IRC67-SCAN',
         raw_class_id: -1,
         category: 'SCANNING',
@@ -225,7 +250,7 @@ export const AIStudioView: React.FC = () => {
       };
     }
 
-    // Push into sliding temporal window (last 6 detections within 1.2 seconds)
+    // Push into sliding temporal window (last 10 detections within 3.5 seconds)
     temporalHistoryRef.current.push({
       class_id: rawCid,
       sign_name: res.primary_prediction.sign_name,
@@ -234,8 +259,8 @@ export const AIStudioView: React.FC = () => {
       top5: res.top5_predictions || [],
       timestamp: now,
     });
-    temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 1200);
-    if (temporalHistoryRef.current.length > 6) {
+    temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 3500);
+    if (temporalHistoryRef.current.length > 10) {
       temporalHistoryRef.current.shift();
     }
 
@@ -286,9 +311,9 @@ export const AIStudioView: React.FC = () => {
     const alertType = isInfoSign ? 'INFO' : 'ALERT';
 
     // 3-STAGE INTELLIGENT RECOGNITION PIPELINE:
-    // Stage 1 (Frame 1): Analyzing sign visual contours & geometry (shape, chromatic ratio). Audio Muted.
-    // Stage 2 (Frame 2): Cross-referencing candidate with 108 Indian RTO records. Audio Muted.
-    // Stage 3 (Frame 3+ with consistent consensus): Record Verified & Active. Triggers Alert/Info once.
+    // Stage 1: Analyzing sign visual contours & geometry.
+    // Stage 2: Cross-referencing candidate with 108 Indian RTO records.
+    // Stage 3: Record Verified & Active. Triggers Alert/Info speech.
     let stageStep = 1;
     let stageTitle = 'STAGE 1: ANALYZING SIGN VISUALS';
     let stageDescription = 'Optical sensor inspecting sign shape & chromatic profile...';
@@ -305,8 +330,11 @@ export const AIStudioView: React.FC = () => {
       isConfirmed = true;
       status = 'CONFIRMED_ACTIVE';
       bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (voteCount >= 3 && bestAvgConf >= 70) {
-      // Confirmed only after multi-frame observation consensus at high certainty (>=70%)
+    } else if (
+      (voteCount >= 2 && bestAvgConf >= 56) ||
+      (voteCount >= 1 && bestAvgConf >= 72)
+    ) {
+      // Confirmed by multi-frame consensus (>=2 frames with >=56% conf) or high certainty single frame (>=72%)
       stageStep = 3;
       stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
       stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
@@ -317,9 +345,9 @@ export const AIStudioView: React.FC = () => {
         class_id: bestCid,
         sign_name: signMeta?.name || res.primary_prediction.sign_name,
         confidence: bestAvgConf,
-        lockedUntil: now + 1400,
+        lockedUntil: now + 2000,
       };
-    } else if (voteCount >= 2 && bestAvgConf >= 55) {
+    } else if (voteCount >= 1 && bestAvgConf >= 50) {
       // Stage 2: Cross-referencing 108 records
       stageStep = 2;
       stageTitle = 'STAGE 2: MATCHING 108 RTO RECORDS';
@@ -385,6 +413,8 @@ export const AIStudioView: React.FC = () => {
 
   // Real webcam activation with zero race condition
   const startWebcam = async () => {
+    // Proactively unlock browser audio for mobile & desktop live speech
+    speechService.unlockAudio();
     // Acquire exclusive audio lock for optical camera detection
     speechService.setExclusiveSource('CAMERA');
     setActiveMode('webcam');
@@ -464,7 +494,7 @@ export const AIStudioView: React.FC = () => {
     if (!signMeta || signMeta.raw_class_id < 0) return;
     if (!voiceAlertsEnabled && !force) return;
     if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
-    if ((signMeta.confidence || 0) < 70 && !force) return; // STRICT GUARD: NEVER SPEAK LOW CONFIDENCE!
+    if ((signMeta.confidence || 0) < 55 && !force) return; // Allow valid 55%+ detections from mobile screens or ambient lighting
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
@@ -472,13 +502,13 @@ export const AIStudioView: React.FC = () => {
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
     // Strict ADAS Cadence & Calm Rhythm:
-    // 1. Global Refractory: Never voice alerts faster than 4.5 seconds apart unless forced
-    if (!force && timeSinceLastSpokenAny < 4500) {
+    // 1. Global Refractory: Never voice alerts faster than 2.5 seconds apart unless forced
+    if (!force && timeSinceLastSpokenAny < 2500) {
       return;
     }
 
-    // 2. Same-Sign Cooldown: Do not repeat identical sign within 14 seconds
-    if (!force && isSameSign && timeSinceThisSign < 14000) {
+    // 2. Same-Sign Cooldown: Do not repeat identical sign within 6 seconds
+    if (!force && isSameSign && timeSinceThisSign < 6000) {
       return;
     }
 
@@ -597,6 +627,7 @@ export const AIStudioView: React.FC = () => {
 
   // High-Resolution Snapshot Capture & Immediate Statutory Voice Alert
   const captureAndAnalyzeSnapshot = async () => {
+    speechService.unlockAudio();
     if (!webcamActiveRef.current || !videoRef.current || videoRef.current.readyState < 2) {
       toast.error('Camera stream is not active. Please click "Live PC Webcam" to enable camera first.');
       return;
@@ -709,6 +740,7 @@ export const AIStudioView: React.FC = () => {
   };
 
   const resumeLiveStream = () => {
+    speechService.unlockAudio();
     setIsSnapshotFrozen(false);
     isSnapshotFrozenRef.current = false;
     setSnapshotPreviewUrl(null);
@@ -943,6 +975,7 @@ export const AIStudioView: React.FC = () => {
           {/* Mute / Unmute Toggle */}
           <button
             onClick={() => {
+              speechService.unlockAudio();
               const nextState = !voiceAlertsEnabled;
               setVoiceAlertsEnabled(nextState);
               if (!nextState) {
