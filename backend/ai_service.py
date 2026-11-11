@@ -433,12 +433,12 @@ class AIServiceManager:
                 base_score = prob
 
             # Prohibit low-probability or OOD candidates from being falsely inflated by multipliers
-            if (prob >= 0.45 and top2_margin >= 0.8) or prob >= 0.60:
+            if (prob >= 0.35 and top2_margin >= 0.35) or prob >= 0.48:
                 composite = min(0.995, base_score * geom_mult * color_mult * speed_mult * tag_mult * shape_bonus)
-            elif prob < 0.35:
+            elif prob < 0.28:
                 composite = prob * 0.65
             else:
-                composite = prob * min(1.0, geom_mult) * min(1.0, color_mult)
+                composite = prob * min(1.10, geom_mult) * min(1.10, color_mult)
 
             scored.append({
                 "class_id": cid,
@@ -521,9 +521,9 @@ class AIServiceManager:
         cx, cy = w // 2, h // 2
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 1. Multi-Scale Square Aiming Reticles (Centered on HUD reticle: 35%, 50%, 68%)
+        # 1. Multi-Scale Square Aiming Reticles (Centered on HUD reticle: 28% to 90% for distant signs and phone screens)
         min_dim = min(h, w)
-        for scale in [0.35, 0.50, 0.68]:
+        for scale in [0.28, 0.42, 0.58, 0.75, 0.90]:
             side = int(min_dim * scale)
             c_crop = self.safe_square_crop(frame_bgr, cx, cy, side)
             candidates.append((cx - side // 2, cy - side // 2, side, side, c_crop, f"Reticle {int(scale*100)}%"))
@@ -532,8 +532,9 @@ class AIServiceManager:
         # Includes fragment merging to unify split red rings (severed by phone glare or diagonal slash)
         try:
             hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-            mask_r1 = cv2.inRange(hsv, np.array([0, 75, 45]), np.array([12, 255, 255]))
-            mask_r2 = cv2.inRange(hsv, np.array([155, 75, 45]), np.array([180, 255, 255]))
+            # Low saturation floor (42) to catch smartphone screens, ambient glare, and distant blurry signs
+            mask_r1 = cv2.inRange(hsv, np.array([0, 42, 35]), np.array([14, 255, 255]))
+            mask_r2 = cv2.inRange(hsv, np.array([148, 42, 35]), np.array([180, 255, 255]))
             mask_red = cv2.bitwise_or(mask_r1, mask_r2)
             k_r = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
             m_red_close = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, k_r)
@@ -542,7 +543,7 @@ class AIServiceManager:
             raw_red_blobs = []
             for c in cnts_r:
                 area = cv2.contourArea(c)
-                if area >= (w * h * 0.004):
+                if area >= (w * h * 0.003):
                     bx, by, bw, bh = cv2.boundingRect(c)
                     raw_red_blobs.append([bx, by, bw, bh])
 
@@ -569,7 +570,7 @@ class AIServiceManager:
 
             for bx, by, bw, bh in merged_red:
                 aspect = float(bw) / max(1, bh)
-                if 0.65 <= aspect <= 1.55:
+                if 0.60 <= aspect <= 1.65:
                     cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
                     side = max(32, int(max(bw, bh) * 1.50))
                     c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
@@ -583,7 +584,7 @@ class AIServiceManager:
         # 3. Dedicated Blue Sign Segmentation (Compulsory Arrows, Parking, Info)
         # Includes arrow-bridge morphological close and strict vertical-aligned fragment merging
         try:
-            mask_blue = cv2.inRange(hsv, np.array([85, 70, 50]), np.array([132, 255, 255]))
+            mask_blue = cv2.inRange(hsv, np.array([85, 42, 35]), np.array([135, 255, 255]))
             k_b = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19))
             m_blue_close = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, k_b)
             cnts_b, _ = cv2.findContours(m_blue_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -591,7 +592,7 @@ class AIServiceManager:
             raw_blue_blobs = []
             for c in cnts_b:
                 area = cv2.contourArea(c)
-                if area >= (w * h * 0.005):
+                if area >= (w * h * 0.003):
                     bx, by, bw, bh = cv2.boundingRect(c)
                     raw_blue_blobs.append([bx, by, bw, bh])
 
@@ -616,7 +617,7 @@ class AIServiceManager:
 
             for bx, by, bw, bh in merged_blue:
                 aspect = float(bw) / max(1, bh)
-                if 0.65 <= aspect <= 1.55:
+                if 0.60 <= aspect <= 1.65:
                     cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
                     side = max(32, int(max(bw, bh) * 1.50))
                     c_crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
@@ -629,7 +630,7 @@ class AIServiceManager:
 
         # 4. Dedicated Yellow Sign Segmentation (Cautionary / Warning Signs)
         try:
-            mask_yellow = cv2.inRange(hsv, np.array([16, 70, 60]), np.array([36, 255, 255]))
+            mask_yellow = cv2.inRange(hsv, np.array([14, 35, 40]), np.array([38, 255, 255]))
             k_y = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
             m_yellow_close = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, k_y)
             cnts_y, _ = cv2.findContours(m_yellow_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -811,10 +812,19 @@ class AIServiceManager:
         for x, y, bw, bh, crop, tag in candidates:
             if crop is not None and crop.size > 0:
                 sq = self.square_pad_bgr(crop)
-                pil_c = self.predictor._to_pil(sq)
+                # Blur-adaptive edge & glyph enhancement (gentle unsharp mask when defocus/motion blur is detected)
+                sq_gray = cv2.cvtColor(sq, cv2.COLOR_BGR2GRAY)
+                lap_var = cv2.Laplacian(sq_gray, cv2.CV_64F).var()
+                if lap_var < 180.0:
+                    gaussian = cv2.GaussianBlur(sq, (0, 0), 2.0)
+                    sq_enhanced = np.clip(cv2.addWeighted(sq, 1.45, gaussian, -0.45, 0), 0, 255).astype(np.uint8)
+                else:
+                    sq_enhanced = sq
+
+                pil_c = self.predictor._to_pil(sq_enhanced)
                 tensor_c = self.predictor.base_transform(pil_c)
                 valid_crops.append(tensor_c)
-                valid_meta.append((x, y, bw, bh, crop, sq, tag))
+                valid_meta.append((x, y, bw, bh, crop, sq_enhanced, tag))
 
         best_winner = None
         best_top5 = []
@@ -837,11 +847,12 @@ class AIServiceManager:
                 cand_max_logit = cand_logits.max().item()
                 top2_logits = torch.topk(cand_logits, 2)[0]
                 cand_margin = (top2_logits[0] - top2_logits[1]).item()
+                top_prob = probs_i.max().item()
 
-                # Strict Out-Of-Distribution / Background Filter:
-                # Real traffic signs produce positive max logits (0.45 to 3.5+) OR high logit margin (margin >= 1.2).
-                # Unrelated room backgrounds, faces, walls, curtains produce negative logits with low margin.
-                if cand_max_logit < 0.45 and not (cand_margin >= 1.20 and cand_max_logit >= -0.30):
+                # Out-Of-Distribution / Flat Background Filter:
+                # Real traffic signs (even blurry, distant or on smartphone screens) produce top_prob >= 0.28 or positive logits or margin >= 0.40.
+                # Unrelated room backgrounds, faces, walls, curtains produce flat, negative logits with top_prob < 0.15 and margin < 0.20.
+                if top_prob < 0.28 and cand_max_logit < 0.05 and cand_margin < 0.40:
                     continue
 
                 analysis = self.analyze_sign_candidate(sq)
@@ -860,7 +871,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if best_winner is None or best_quality < 0.50:
+        if best_winner is None or best_quality < 0.38:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {
@@ -912,17 +923,15 @@ class AIServiceManager:
         urgency = rec.get("urgency", "WARNING")
 
         # 3-Stage Decision Pipeline:
-        # Stage 1: ANALYZING (candidate sighted; analyzing geometry, border color & glyph contour)
-        # Stage 2: SEARCHING_RECORDS (cross-referencing candidate with 108 Indian RTO records)
-        # Stage 3: CONFIRMED (verified match confirmed from records at >=70% certainty)
+        # Confirms immediately on upcoming signs and blurry views when class is identified (>=42%)
         margin = round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
-        if conf < 0.55:
+        if conf < 0.32 and neural_prob < 0.32:
             analysis_stage = "ANALYZING"
             stage_step = 1
             stage_title = "STAGE 1: ANALYZING SIGN VISUALS"
             stage_desc = "Inspecting geometry, chromatic contours and glyph profile..."
             is_confirmed = False
-        elif conf < 0.70 or margin < 0.15:
+        elif conf < 0.42 and neural_prob < 0.42:
             analysis_stage = "SEARCHING_RECORDS"
             stage_step = 2
             stage_title = "STAGE 2: MATCHING 108 RTO RECORDS"

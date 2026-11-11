@@ -136,14 +136,12 @@ export const AIStudioView: React.FC = () => {
     const rawCid = Number(res.primary_prediction.class_id);
     const rawConf = Math.round(res.primary_prediction.confidence * 1000) / 10;
     const rawBox: [number, number, number, number] = res.bounding_box || [160, 100, 320, 260];
-    const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 50);
+    const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 42);
 
-    const isModelVerified = Boolean(
-      (res.primary_prediction?.is_confirmed || res.is_confirmed) && rawConf >= 58
-    );
-
-    // Instant confirmation path: direct snapshot analysis or model-verified prediction with confident features
-    if ((isSnapshot && rawConf >= 58) || isModelVerified) {
+    // Instant Real-Time Responsive Perception Engine:
+    // As soon as the live camera sights an upcoming traffic sign (even if slightly blurry, distant, or backlit),
+    // immediately confirm the match, display the bounding box reticle, and sound the voice alert without waiting!
+    if (isDetected) {
       const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === rawCid) || ALL_108_RTO_SIGNS[rawCid];
       const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
       const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (rawCid === 0 || rawCid === 2 ? 'CRITICAL' : 'WARNING'));
@@ -155,7 +153,7 @@ export const AIStudioView: React.FC = () => {
         class_id: rawCid,
         sign_name: signMeta?.name || res.primary_prediction.sign_name,
         confidence: rawConf,
-        lockedUntil: now + 2000,
+        lockedUntil: now + 2500,
       };
 
       return {
@@ -418,6 +416,7 @@ export const AIStudioView: React.FC = () => {
     // Acquire exclusive audio lock for optical camera detection
     speechService.setExclusiveSource('CAMERA');
     setActiveMode('webcam');
+    setVerifiedStatus(null);
     setIsSnapshotFrozen(false);
     isSnapshotFrozenRef.current = false;
     setSnapshotPreviewUrl(null);
@@ -494,7 +493,7 @@ export const AIStudioView: React.FC = () => {
     if (!signMeta || signMeta.raw_class_id < 0) return;
     if (!voiceAlertsEnabled && !force) return;
     if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
-    if ((signMeta.confidence || 0) < 55 && !force) return; // Allow valid 55%+ detections from mobile screens or ambient lighting
+    if ((signMeta.confidence || 0) < 42 && !force) return; // Immediate alerts for upcoming and slightly blurry signs
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
@@ -502,13 +501,13 @@ export const AIStudioView: React.FC = () => {
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
     // Strict ADAS Cadence & Calm Rhythm:
-    // 1. Global Refractory: Never voice alerts faster than 2.5 seconds apart unless forced
-    if (!force && timeSinceLastSpokenAny < 2500) {
+    // 1. Global Refractory: Never voice alerts faster than 2.0 seconds apart unless forced
+    if (!force && timeSinceLastSpokenAny < 2000) {
       return;
     }
 
-    // 2. Same-Sign Cooldown: Do not repeat identical sign within 6 seconds
-    if (!force && isSameSign && timeSinceThisSign < 6000) {
+    // 2. Same-Sign Cooldown: Do not repeat identical sign within 5 seconds
+    if (!force && isSameSign && timeSinceThisSign < 5000) {
       return;
     }
 
@@ -741,6 +740,7 @@ export const AIStudioView: React.FC = () => {
 
   const resumeLiveStream = () => {
     speechService.unlockAudio();
+    setVerifiedStatus(null);
     setIsSnapshotFrozen(false);
     isSnapshotFrozenRef.current = false;
     setSnapshotPreviewUrl(null);
