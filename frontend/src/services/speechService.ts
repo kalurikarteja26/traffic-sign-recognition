@@ -109,6 +109,13 @@ class SpeechService {
     return this.synth !== null || typeof Audio !== 'undefined';
   }
 
+  public isCurrentlySpeaking(): boolean {
+    const isSynthSpeaking =
+      typeof window !== 'undefined' && 'speechSynthesis' in window && Boolean(window.speechSynthesis?.speaking);
+    const isAudioActive = Boolean(this.currentAudio && !this.currentAudio.paused && !this.currentAudio.ended);
+    return this.isSpeaking || isSynthSpeaking || isAudioActive;
+  }
+
   public getSettings(): SpeechSettings {
     return { ...this.settings };
   }
@@ -338,6 +345,11 @@ class SpeechService {
 
     // Source exclusivity: if exclusiveSource is set (e.g. CAMERA), suppress background NAVIGATION alerts
     if (this.exclusiveSource && source !== this.exclusiveSource && source !== 'MANUAL' && urgency !== 'CRITICAL') {
+      return;
+    }
+
+    // Anti-overlap: If an alert is actively speaking, politely ignore new stream triggers unless MANUAL/CRITICAL
+    if (source !== 'MANUAL' && urgency !== 'CRITICAL' && this.isCurrentlySpeaking()) {
       return;
     }
 
@@ -674,6 +686,11 @@ class SpeechService {
   ): Promise<void> {
     if (!this.settings.enabled) return;
     if (this.exclusiveSource && source !== this.exclusiveSource && source !== 'MANUAL' && urgency !== 'CRITICAL') {
+      return;
+    }
+
+    // Anti-overlap: If an alert is actively speaking, politely ignore new stream triggers unless MANUAL/CRITICAL
+    if (source !== 'MANUAL' && urgency !== 'CRITICAL' && this.isCurrentlySpeaking()) {
       return;
     }
 

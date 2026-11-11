@@ -193,38 +193,10 @@ export const AIStudioView: React.FC = () => {
     }
 
     if (!isDetected) {
-      // Check if prior confirmed detection is still within warm grace period (2000ms)
-      if (activeLockRef.current && now < activeLockRef.current.lockedUntil) {
-        const lockedCid = activeLockRef.current.class_id;
-        const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === lockedCid) || ALL_108_RTO_SIGNS[lockedCid];
-        return {
-          sign_name: signMeta?.name || activeLockRef.current.sign_name,
-          class_id: signMeta?.sign_code || `#${String(lockedCid).padStart(3, '0')}`,
-          raw_class_id: lockedCid,
-          category: signMeta?.category || 'MANDATORY',
-          shape: signMeta?.shape || 'Standard',
-          color_code: signMeta?.color_code || '#EF4444',
-          image_url: signMeta?.image_url || `/signs/${String(lockedCid).padStart(3, '0')}.png`,
-          confidence: activeLockRef.current.confidence,
-          margin_score: 0.20,
-          is_confirmed: true,
-          legal_reference: signMeta?.legal_reference || 'IRC:67 Regulatory',
-          penalty_info: signMeta?.penalty_info || 'Statutory traffic regulation',
-          meaning: signMeta?.meaning || 'Regulatory road sign',
-          halt: signMeta?.halt,
-          distance_est: '~14m',
-          inference_ms: Math.round((res.inference_time_ms || 18.0) * 10) / 10,
-          bounding_box: smoothedBoxRef.current || rawBox,
-          frame_dimensions: res.frame_dimensions || [640, 480],
-          top5: [],
-          status: 'CONFIRMED_ACTIVE',
-        };
-      }
-
-      // Standby / Aiming State
+      // Standby / Aiming State: When no sign is detected, strictly silence locks & alerts
+      activeLockRef.current = null;
       smoothedBoxRef.current = null;
-      // Retain recent detections within 3.5s window so brief flickers don't reset tracking
-      temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 3500);
+      temporalHistoryRef.current = [];
       return {
         sign_name: 'Searching for Signs...',
         class_id: 'IRC67-SCAN',
@@ -235,6 +207,7 @@ export const AIStudioView: React.FC = () => {
         image_url: '/signs/000.png',
         confidence: 0,
         margin_score: 0,
+        is_detected: false,
         is_confirmed: false,
         legal_reference: 'Optical Road Telemetry Online',
         penalty_info: 'Ready for road signs, phone screen, or printed charts',
@@ -334,7 +307,7 @@ export const AIStudioView: React.FC = () => {
       isConfirmed = true;
       status = 'CONFIRMED_ACTIVE';
       bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (res.primary_prediction.is_confirmed || bestAvgConf >= 32 || rawConf >= 32) {
+    } else if (res.primary_prediction.is_confirmed || (bestAvgConf >= 38 && isDetected) || (rawConf >= 38 && isDetected)) {
       // Instant Fast-Lock for fast-moving vehicles & approaching roadside signs
       stageStep = 3;
       stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
@@ -349,11 +322,11 @@ export const AIStudioView: React.FC = () => {
         lockedUntil: now + 2000,
       };
     } else {
-      stageStep = 2;
-      stageTitle = 'STAGE 2: MATCHING 108 RTO RECORDS';
-      stageDescription = `Cross-referencing candidate shape (${detectedShape}) with 108 Indian RTO database: ${signMeta?.name || res.primary_prediction.sign_name}...`;
+      stageStep = 1;
+      stageTitle = 'STAGE 1: OPTICAL SCANNING';
+      stageDescription = `Optical sensor scanning road ahead...`;
       isConfirmed = false;
-      status = 'SEARCHING_RECORDS';
+      status = 'ANALYZING_SIGN';
     }
 
     return {
@@ -369,6 +342,7 @@ export const AIStudioView: React.FC = () => {
       confidence: bestAvgConf,
       glyph_match: res.primary_prediction.glyph_match || 0,
       margin_score: res.primary_prediction.margin_score || 0,
+      is_detected: isDetected,
       is_confirmed: isConfirmed,
       stage_step: stageStep,
       stage_title: stageTitle,
@@ -485,24 +459,31 @@ export const AIStudioView: React.FC = () => {
 
   // Intelligent Voice Alert Engine for Webcam Detections
   const speakWebcamDetection = (signMeta: any, force = false) => {
-    if (!signMeta || signMeta.raw_class_id < 0) return;
+    // 1. Strict Silence: Do NOT trigger when no traffic sign is seen or unconfirmed
+    if (!signMeta || signMeta.raw_class_id < 0 || !signMeta.is_detected || !signMeta.is_confirmed) {
+      return;
+    }
     if (!voiceAlertsEnabled && !force) return;
-    if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
-    if ((signMeta.confidence || 0) < 32 && !force) return; // Immediate alerts for upcoming and slightly blurry signs
+    if ((signMeta.confidence || 0) < 38 && !force) return;
+
+    // 2. Strict Anti-Overlap: Never start a new alert while previous speech is actively playing
+    if (!force && speechService.isCurrentlySpeaking()) {
+      return;
+    }
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
     const timeSinceLastSpokenAny = now - globalLastSpokenTimestampRef.current;
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
-    // Strict ADAS Cadence & Calm Rhythm:
-    // 1. Global Refractory: Never voice alerts faster than 1.8 seconds apart unless forced
-    if (!force && timeSinceLastSpokenAny < 1800) {
+    // 3. Strict ADAS Cadence & Calm Rhythm:
+    // Global Refractory: Never voice alerts faster than 6.0 seconds apart (multilingual speech takes 4-5s)
+    if (!force && timeSinceLastSpokenAny < 6000) {
       return;
     }
 
-    // 2. Same-Sign Cooldown: Do not repeat identical sign within 4 seconds
-    if (!force && isSameSign && timeSinceThisSign < 4000) {
+    // Same-Sign Cooldown: Do not repeat identical sign within 10 seconds
+    if (!force && isSameSign && timeSinceThisSign < 10000) {
       return;
     }
 
@@ -606,7 +587,7 @@ export const AIStudioView: React.FC = () => {
         const parsed = parsePredictionResult(res);
         if (parsed && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
           setLivePrediction(parsed);
-          if (parsed.is_confirmed && parsed.raw_class_id >= 0) {
+          if (parsed.is_detected && parsed.is_confirmed && parsed.raw_class_id >= 0 && parsed.confidence >= 38) {
             speakWebcamDetection(parsed);
           }
         }
@@ -927,23 +908,6 @@ export const AIStudioView: React.FC = () => {
             <span className="material-symbols-outlined text-sm">camera_alt</span>
             <span>Live PC Webcam</span>
           </button>
-
-          {activeMode === 'webcam' && (
-            <button
-              onClick={isSnapshotFrozen ? resumeLiveStream : captureAndAnalyzeSnapshot}
-              disabled={isCapturingSnapshot}
-              className={`px-3.5 py-1.5 rounded-lg font-mono text-xs transition-all flex items-center gap-1.5 border cursor-pointer ${
-                isSnapshotFrozen
-                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
-                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.3)] font-semibold'
-              }`}
-            >
-              <span className="material-symbols-outlined text-sm">
-                {isSnapshotFrozen ? 'videocam' : 'photo_camera'}
-              </span>
-              <span>{isSnapshotFrozen ? 'Resume Live Stream' : 'Take Picture & Alert'}</span>
-            </button>
-          )}
 
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -1354,59 +1318,35 @@ export const AIStudioView: React.FC = () => {
             </div>
           )}
 
-          {/* DEDICATED WEBCAM CONTROL BAR (Placed below video, completely unobstructed view) */}
+          {/* DEDICATED WEBCAM CONTROL BAR (Continuous autonomous live telemetry) */}
           {activeMode === 'webcam' && (
             <div className="bg-[#10203B]/90 border border-cyan-500/30 backdrop-blur-xl p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-xl">
               <div className="flex items-center gap-2">
-                <span className={`w-3 h-3 rounded-full ${isSnapshotFrozen ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`}></span>
+                <span className={`w-3 h-3 rounded-full ${livePrediction?.is_confirmed ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-400'}`}></span>
                 <span className="font-mono text-sm text-white font-bold">
-                  {isSnapshotFrozen ? 'PHOTO CAPTURED & ANALYZED' : 'LIVE SCANNING ACTIVE'}
+                  {livePrediction?.is_confirmed ? 'TARGET LOCKED & STATUTORY ALERT ACTIVE' : 'LIVE AUTONOMOUS ADAS SCANNING'}
                 </span>
                 <span className="text-slate-500 hidden sm:inline">•</span>
                 <span className="font-mono text-xs text-slate-300 hidden sm:inline">
-                  {isSnapshotFrozen ? (livePrediction?.is_confirmed ? `Detected: ${livePrediction.sign_name}` : 'Inspection Complete') : 'Hold traffic sign in front of camera'}
+                  {livePrediction?.is_confirmed ? `Detected: ${livePrediction.sign_name}` : 'Hold road sign in camera reticle for instant voice alert'}
                 </span>
               </div>
 
               <div className="flex items-center gap-2.5">
-                {!isSnapshotFrozen ? (
-                  <button
-                    onClick={captureAndAnalyzeSnapshot}
-                    disabled={isCapturingSnapshot}
-                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-mono text-sm font-bold transition-all shadow-[0_0_20px_rgba(34,211,238,0.4)] flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer"
-                  >
-                    <span className="material-symbols-outlined text-xl">photo_camera</span>
-                    <span>Take Picture & Analyze</span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      onClick={resumeLiveStream}
-                      className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-mono text-xs font-bold border border-cyan-400/40 transition-all flex items-center gap-2 cursor-pointer shadow"
-                    >
-                      <span className="material-symbols-outlined text-base">videocam</span>
-                      <span>Resume Live Feed</span>
-                    </button>
-                    <button
-                      onClick={captureAndAnalyzeSnapshot}
-                      disabled={isCapturingSnapshot}
-                      className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-mono text-xs font-bold transition-all shadow flex items-center gap-2 active:scale-95 cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-base">refresh</span>
-                      <span>Retake Picture</span>
-                    </button>
-                  </>
-                )}
-
-                {livePrediction?.is_confirmed && (
+                {livePrediction?.is_confirmed && livePrediction.raw_class_id >= 0 ? (
                   <button
                     onClick={() => speakWebcamDetection(livePrediction, true)}
-                    className="px-3.5 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold border border-emerald-400/40 transition-colors flex items-center gap-1.5 cursor-pointer"
+                    className="px-4 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold border border-emerald-400/40 transition-colors flex items-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.25)]"
                     title="Replay speech alert"
                   >
                     <span className="material-symbols-outlined text-base">volume_up</span>
-                    <span>Replay</span>
+                    <span>Replay Voice Alert</span>
                   </button>
+                ) : (
+                  <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-cyan-950/40 border border-cyan-500/30 text-cyan-300 font-mono text-xs">
+                    <span className="material-symbols-outlined text-sm text-cyan-400 animate-spin">radar</span>
+                    <span>Hands-Free Optical Sensor</span>
+                  </div>
                 )}
               </div>
             </div>

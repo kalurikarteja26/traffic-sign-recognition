@@ -297,16 +297,31 @@ class AIServiceManager:
             name = rec.get("name", f"Class {cid}")
             cat = rec.get("category", "MANDATORY")
 
-            # Soft chromatic guidance (boosts corroborated color without overriding deep neural network)
-            color_boost = 1.0
-            if (cat == "MANDATORY" or cid == 0) and red_ratio > 0.12:
-                color_boost = 1.06
-            elif cat == "INFORMATORY" and blue_ratio > 0.18:
-                color_boost = 1.06
-            elif cat == "CAUTIONARY" and (yellow_ratio > 0.12 or red_ratio > 0.12):
-                color_boost = 1.06
+            # Validate chromatic corroboration against Indian RTO statutory specifications
+            is_corroborated = False
+            if (cat == "MANDATORY" or cid == 0) and red_ratio > 0.07:
+                is_corroborated = True
+            elif cat == "INFORMATORY" and blue_ratio > 0.09:
+                is_corroborated = True
+            elif cat == "CAUTIONARY" and (yellow_ratio > 0.07 or red_ratio > 0.07):
+                is_corroborated = True
+            elif cat == "MANDATORY" and cid in range(23, 33) and blue_ratio > 0.09:
+                is_corroborated = True
 
-            score = min(0.995, prob * color_boost)
+            # If no sign chromatic presence is detected in this crop (e.g. wall, face, curtain, room furniture):
+            # Heavily suppress false positive predictions
+            if not is_corroborated:
+                if red_ratio < 0.03 and blue_ratio < 0.03 and yellow_ratio < 0.03:
+                    # Pure flat background / room interior / person
+                    if prob < 0.68:
+                        score = prob * 0.35
+                    else:
+                        score = prob
+                else:
+                    score = prob * 0.80
+            else:
+                score = min(0.995, prob * 1.08)
+
             scored.append({
                 "class_id": cid,
                 "name": name,
@@ -315,11 +330,23 @@ class AIServiceManager:
                 "neural_prob": round(prob, 4),
                 "glyph_match": 0.95,
                 "composite_score": round(score, 4),
+                "is_corroborated": is_corroborated,
                 "record": rec
             })
 
         scored.sort(key=lambda x: x["composite_score"], reverse=True)
-        winner = scored[0] if (scored and scored[0]["composite_score"] >= 0.28) else None
+        winner = None
+        if scored:
+            top_cand = scored[0]
+            top_prob = top_cand["neural_prob"]
+            comp_score = top_cand["composite_score"]
+            is_corr = top_cand.get("is_corroborated", False)
+            
+            # Acceptance Gate:
+            # - Corroborated with sign chromatic presence: composite >= 0.36
+            # - Uncorroborated (room background/face): neural probability must exceed 0.70 with clear margin
+            if (is_corr and comp_score >= 0.36) or (top_prob >= 0.70 and top2_margin >= 0.25):
+                winner = top_cand
         return winner, scored
 
     def safe_square_crop(self, frame_bgr: np.ndarray, cx: int, cy: int, side: int) -> np.ndarray:
@@ -612,7 +639,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if best_winner is None or best_quality < 0.28:
+        if best_winner is None or best_quality < 0.36:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {
