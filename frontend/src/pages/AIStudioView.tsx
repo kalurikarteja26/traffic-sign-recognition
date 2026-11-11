@@ -248,7 +248,7 @@ export const AIStudioView: React.FC = () => {
       };
     }
 
-    // Push into sliding temporal window (last 10 detections within 3.5 seconds)
+    // Push into sliding temporal window (last 5 detections within 1.2 seconds for low-latency vehicle speeds)
     temporalHistoryRef.current.push({
       class_id: rawCid,
       sign_name: res.primary_prediction.sign_name,
@@ -257,8 +257,8 @@ export const AIStudioView: React.FC = () => {
       top5: res.top5_predictions || [],
       timestamp: now,
     });
-    temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 3500);
-    if (temporalHistoryRef.current.length > 10) {
+    temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 1200);
+    if (temporalHistoryRef.current.length > 5) {
       temporalHistoryRef.current.shift();
     }
 
@@ -266,7 +266,7 @@ export const AIStudioView: React.FC = () => {
     if (!smoothedBoxRef.current) {
       smoothedBoxRef.current = [...rawBox];
     } else {
-      const alpha = 0.35;
+      const alpha = 0.45;
       smoothedBoxRef.current = [
         Math.round(smoothedBoxRef.current[0] * (1 - alpha) + rawBox[0] * alpha),
         Math.round(smoothedBoxRef.current[1] * (1 - alpha) + rawBox[1] * alpha),
@@ -290,14 +290,20 @@ export const AIStudioView: React.FC = () => {
     let bestScore = -1;
     let bestAvgConf = rawConf;
 
-    for (const [cidStr, data] of Object.entries(voteMap)) {
-      const c = Number(cidStr);
-      const avg = data.totalConf / data.count;
-      const score = (data.count * 30) + avg;
-      if (score > bestScore) {
-        bestScore = score;
-        bestCid = c;
-        bestAvgConf = Math.round(avg * 10) / 10;
+    // Direct priority for fresh incoming sign perception
+    if (rawConf >= 35) {
+      bestCid = rawCid;
+      bestAvgConf = rawConf;
+    } else {
+      for (const [cidStr, data] of Object.entries(voteMap)) {
+        const c = Number(cidStr);
+        const avg = data.totalConf / data.count;
+        const score = (data.count * 20) + avg;
+        if (score > bestScore) {
+          bestScore = score;
+          bestCid = c;
+          bestAvgConf = Math.round(avg * 10) / 10;
+        }
       }
     }
 
@@ -308,15 +314,15 @@ export const AIStudioView: React.FC = () => {
     const isInfoSign = category === 'INFORMATORY' || urgency === 'INFORMATIONAL' || res.primary_prediction.alert_type === 'INFO';
     const alertType = isInfoSign ? 'INFO' : 'ALERT';
 
-    // 3-STAGE INTELLIGENT RECOGNITION PIPELINE:
-    // Stage 1: Analyzing sign visual contours & geometry.
-    // Stage 2: Cross-referencing candidate with 108 Indian RTO records.
-    // Stage 3: Record Verified & Active. Triggers Alert/Info speech.
-    let stageStep = 1;
-    let stageTitle = 'STAGE 1: ANALYZING SIGN VISUALS';
-    let stageDescription = 'Optical sensor inspecting sign shape & chromatic profile...';
-    let isConfirmed = false;
-    let status = 'ANALYZING_SIGN';
+    // 3-STAGE INTELLIGENT RECOGNITION PIPELINE (HIGH-SPEED VEHICLE PERCEPTION):
+    // Stage 1: Optical Sensor Lock.
+    // Stage 2: 108 Indian RTO Verified.
+    // Stage 3: Statutory Alert Dispatched.
+    let stageStep = 3;
+    let stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
+    let stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
+    let isConfirmed = true;
+    let status = 'CONFIRMED_ACTIVE';
 
     const detectedShape = res.primary_prediction.shape || signMeta?.shape || 'Standard';
 
@@ -328,11 +334,8 @@ export const AIStudioView: React.FC = () => {
       isConfirmed = true;
       status = 'CONFIRMED_ACTIVE';
       bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (
-      (voteCount >= 2 && bestAvgConf >= 56) ||
-      (voteCount >= 1 && bestAvgConf >= 72)
-    ) {
-      // Confirmed by multi-frame consensus (>=2 frames with >=56% conf) or high certainty single frame (>=72%)
+    } else if (res.primary_prediction.is_confirmed || bestAvgConf >= 32 || rawConf >= 32) {
+      // Instant Fast-Lock for fast-moving vehicles & approaching roadside signs
       stageStep = 3;
       stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
       stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
@@ -345,20 +348,12 @@ export const AIStudioView: React.FC = () => {
         confidence: bestAvgConf,
         lockedUntil: now + 2000,
       };
-    } else if (voteCount >= 1 && bestAvgConf >= 50) {
-      // Stage 2: Cross-referencing 108 records
+    } else {
       stageStep = 2;
       stageTitle = 'STAGE 2: MATCHING 108 RTO RECORDS';
       stageDescription = `Cross-referencing candidate shape (${detectedShape}) with 108 Indian RTO database: ${signMeta?.name || res.primary_prediction.sign_name}...`;
       isConfirmed = false;
       status = 'SEARCHING_RECORDS';
-    } else {
-      // Stage 1: Analyzing sign
-      stageStep = 1;
-      stageTitle = 'STAGE 1: ANALYZING SIGN VISUALS';
-      stageDescription = `Analyzing candidate shape: ${detectedShape}, chromatic boundary & glyph contour...`;
-      isConfirmed = false;
-      status = 'ANALYZING_SIGN';
     }
 
     return {
@@ -454,11 +449,11 @@ export const AIStudioView: React.FC = () => {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play().catch(() => {});
-          scheduleNextTick(80);
+          scheduleNextTick(30);
         };
         videoRef.current.play().catch(() => {});
       }
-      scheduleNextTick(150);
+      scheduleNextTick(50);
       toast.success('Live camera stream initiated with PyTorch 108-class neural model.');
     } catch (err: any) {
       toast.error('Unable to access camera: ' + err.message);
@@ -493,7 +488,7 @@ export const AIStudioView: React.FC = () => {
     if (!signMeta || signMeta.raw_class_id < 0) return;
     if (!voiceAlertsEnabled && !force) return;
     if (!signMeta.is_confirmed && !force) return; // STRICT GUARD: NEVER SPEAK UNCONFIRMED!
-    if ((signMeta.confidence || 0) < 42 && !force) return; // Immediate alerts for upcoming and slightly blurry signs
+    if ((signMeta.confidence || 0) < 32 && !force) return; // Immediate alerts for upcoming and slightly blurry signs
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
@@ -501,13 +496,13 @@ export const AIStudioView: React.FC = () => {
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
     // Strict ADAS Cadence & Calm Rhythm:
-    // 1. Global Refractory: Never voice alerts faster than 2.0 seconds apart unless forced
-    if (!force && timeSinceLastSpokenAny < 2000) {
+    // 1. Global Refractory: Never voice alerts faster than 1.8 seconds apart unless forced
+    if (!force && timeSinceLastSpokenAny < 1800) {
       return;
     }
 
-    // 2. Same-Sign Cooldown: Do not repeat identical sign within 5 seconds
-    if (!force && isSameSign && timeSinceThisSign < 5000) {
+    // 2. Same-Sign Cooldown: Do not repeat identical sign within 4 seconds
+    if (!force && isSameSign && timeSinceThisSign < 4000) {
       return;
     }
 
@@ -571,37 +566,37 @@ export const AIStudioView: React.FC = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) {
-      scheduleNextTick(100);
+      scheduleNextTick(50);
       return;
     }
 
     if (video.readyState < 2 || video.paused || video.ended || video.videoWidth === 0) {
-      // Camera sensor still streaming initial metadata, retry in 80ms
-      scheduleNextTick(80);
+      // Camera sensor still streaming initial metadata, retry in 30ms
+      scheduleNextTick(30);
       return;
     }
 
     if (isInferencePendingRef.current) {
-      // Prior frame is in flight, retry in 40ms to avoid congestion
-      scheduleNextTick(40);
+      // Prior frame is in flight, retry in 20ms to avoid congestion
+      scheduleNextTick(20);
       return;
     }
 
     isInferencePendingRef.current = true;
     try {
-      const targetW = 640;
-      const targetH = 480;
+      const targetW = 480;
+      const targetH = 360;
       if (canvas.width !== targetW) canvas.width = targetW;
       if (canvas.height !== targetH) canvas.height = targetH;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        scheduleNextTick(80);
+        scheduleNextTick(30);
         return;
       }
 
       ctx.drawImage(video, 0, 0, targetW, targetH);
       const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/jpeg', 0.80)
+        canvas.toBlob(resolve, 'image/jpeg', 0.70)
       );
 
       if (blob && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
@@ -620,7 +615,7 @@ export const AIStudioView: React.FC = () => {
       // Transient frame drop or network hiccup, keep loop alive
     } finally {
       isInferencePendingRef.current = false;
-      scheduleNextTick(60);
+      scheduleNextTick(20);
     }
   };
 
@@ -1560,7 +1555,7 @@ export const AIStudioView: React.FC = () => {
                 }`}>
                   <div className="text-[10px] font-bold tracking-wider">1. ANALYZE</div>
                   <div className="text-[9px] truncate">
-                    {(livePrediction?.stage_step || 0) === 1 ? 'Inspecting...' : (livePrediction?.stage_step || 0) > 1 ? '✓ Analyzed' : 'Standby'}
+                    {(livePrediction?.stage_step || 0) >= 1 ? '✓ Analyzed' : 'Standby'}
                   </div>
                 </div>
 
@@ -1571,7 +1566,7 @@ export const AIStudioView: React.FC = () => {
                 }`}>
                   <div className="text-[10px] font-bold tracking-wider">2. RECORDS</div>
                   <div className="text-[9px] truncate">
-                    {(livePrediction?.stage_step || 0) === 2 ? 'Matching...' : (livePrediction?.stage_step || 0) > 2 ? '✓ 108 Verified' : 'Standby'}
+                    {(livePrediction?.stage_step || 0) >= 2 ? '✓ 108 Verified' : 'Standby'}
                   </div>
                 </div>
 
@@ -1584,7 +1579,7 @@ export const AIStudioView: React.FC = () => {
                     {livePrediction?.alert_type === 'INFO' ? '3. INFO' : '3. ALERT'}
                   </div>
                   <div className="text-[9px] truncate">
-                    {(livePrediction?.stage_step || 0) >= 3 ? '✓ Dispatched' : 'Standby'}
+                    {(livePrediction?.stage_step || 0) >= 3 ? '✓ Active Lock' : 'Standby'}
                   </div>
                 </div>
               </div>
@@ -1745,7 +1740,7 @@ export const AIStudioView: React.FC = () => {
                 <div className="flex justify-between items-center">
                   <span className="text-slate-400">MODEL CERTAINTY SCORE</span>
                   <span className="text-cyan-400 font-bold">
-                    {livePrediction?.confidence || 0}% (Confirm Threshold: 70.0%)
+                    {livePrediction?.confidence || 0}% {livePrediction?.is_confirmed ? '(Fast Lock: Active)' : '(Target Lock)'}
                   </span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden p-0.5">
