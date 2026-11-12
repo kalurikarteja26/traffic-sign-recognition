@@ -22,6 +22,7 @@ export const AIStudioView: React.FC = () => {
     lang: AlertLanguage;
   } | null>(null);
   const lastSpokenWebcamSignRef = useRef<{ signId: number; timestamp: number }>({ signId: -1, timestamp: 0 });
+  const lastNoSignSeenTimestampRef = useRef<number>(0);
   const globalLastSpokenTimestampRef = useRef<number>(0);
 
   // Custom Backend API Configuration
@@ -136,12 +137,13 @@ export const AIStudioView: React.FC = () => {
     const rawCid = Number(res.primary_prediction.class_id);
     const rawConf = Math.round(res.primary_prediction.confidence * 1000) / 10;
     const rawBox: [number, number, number, number] = res.bounding_box || [160, 100, 320, 260];
-    const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 42);
+    const isDetected = Boolean(res.is_detected && rawCid >= 0 && rawConf >= 22);
 
     // Instant Real-Time Responsive Perception Engine:
     // As soon as the live camera sights an upcoming traffic sign (even if slightly blurry, distant, or backlit),
     // immediately confirm the match, display the bounding box reticle, and sound the voice alert without waiting!
     if (isDetected) {
+      lastNoSignSeenTimestampRef.current = 0;
       const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === rawCid) || ALL_108_RTO_SIGNS[rawCid];
       const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
       const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (rawCid === 0 || rawCid === 2 ? 'CRITICAL' : 'WARNING'));
@@ -169,6 +171,7 @@ export const AIStudioView: React.FC = () => {
         confidence: rawConf,
         glyph_match: res.primary_prediction.glyph_match || 0,
         margin_score: res.primary_prediction.margin_score || 0,
+        is_detected: true,
         is_confirmed: true,
         stage_step: 3,
         stage_title: 'STAGE 3: RECORD VERIFIED & ACTIVE',
@@ -192,182 +195,39 @@ export const AIStudioView: React.FC = () => {
       };
     }
 
-    if (!isDetected || rawCid < 0 || rawConf < 35) {
-      // Standby / Aiming State: When no sign is detected, strictly silence locks & alerts
-      activeLockRef.current = null;
-      smoothedBoxRef.current = null;
-      temporalHistoryRef.current = [];
-      return {
-        sign_name: 'Searching for Signs...',
-        class_id: 'IRC67-SCAN',
-        raw_class_id: -1,
-        category: 'SCANNING',
-        shape: 'Reticle',
-        color_code: '#22D3EE',
-        image_url: '/signs/000.png',
-        confidence: 0,
-        margin_score: 0,
-        is_detected: false,
-        is_confirmed: false,
-        legal_reference: 'Optical Road Telemetry Online',
-        penalty_info: 'Ready for road signs, phone screen, or printed charts',
-        meaning: 'Align sign inside reticle at 30-60 cm (1-2 ft) distance.',
-        distance_est: 'Scanning...',
-        inference_ms: Math.round((res.inference_time_ms || 18.0) * 10) / 10,
-        bounding_box: [160, 100, 320, 260],
-        frame_dimensions: res.frame_dimensions || [640, 480],
-        top5: [],
-        status: 'STANDBY',
-      };
+    // Standby / Aiming State: When no sign is detected, strictly silence locks & alerts
+    if (lastNoSignSeenTimestampRef.current === 0) {
+      lastNoSignSeenTimestampRef.current = now;
+    } else if (now - lastNoSignSeenTimestampRef.current > 1200) {
+      // Clear previous sign lock so presenting the same sign again responds immediately!
+      lastSpokenWebcamSignRef.current = { signId: -1, timestamp: 0 };
+      speechService.clearLastSpoken();
     }
 
-    // Push into sliding temporal window (last 5 detections within 1.2 seconds for low-latency vehicle speeds)
-    temporalHistoryRef.current.push({
-      class_id: rawCid,
-      sign_name: res.primary_prediction.sign_name,
-      confidence: rawConf,
-      bounding_box: rawBox,
-      top5: res.top5_predictions || [],
-      timestamp: now,
-    });
-    temporalHistoryRef.current = temporalHistoryRef.current.filter((item) => now - item.timestamp < 1200);
-    if (temporalHistoryRef.current.length > 5) {
-      temporalHistoryRef.current.shift();
-    }
-
-    // Smooth Bounding Box with Linear Interpolation (LERP)
-    if (!smoothedBoxRef.current) {
-      smoothedBoxRef.current = [...rawBox];
-    } else {
-      const alpha = 0.45;
-      smoothedBoxRef.current = [
-        Math.round(smoothedBoxRef.current[0] * (1 - alpha) + rawBox[0] * alpha),
-        Math.round(smoothedBoxRef.current[1] * (1 - alpha) + rawBox[1] * alpha),
-        Math.round(smoothedBoxRef.current[2] * (1 - alpha) + rawBox[2] * alpha),
-        Math.round(smoothedBoxRef.current[3] * (1 - alpha) + rawBox[3] * alpha),
-      ];
-    }
-
-    // Temporal Consensus Voting across the sliding window
-    const voteMap: Record<number, { count: number; totalConf: number; name: string }> = {};
-    for (const item of temporalHistoryRef.current) {
-      if (!voteMap[item.class_id]) {
-        voteMap[item.class_id] = { count: 0, totalConf: 0, name: item.sign_name };
-      }
-      voteMap[item.class_id].count += 1;
-      voteMap[item.class_id].totalConf += item.confidence;
-    }
-
-    // Find class with highest consensus score (frequency + rolling confidence)
-    let bestCid = rawCid;
-    let bestScore = -1;
-    let bestAvgConf = rawConf;
-
-    // Direct priority for fresh incoming sign perception
-    if (rawConf >= 25) {
-      bestCid = rawCid;
-      bestAvgConf = rawConf;
-    } else {
-      for (const [cidStr, data] of Object.entries(voteMap)) {
-        const c = Number(cidStr);
-        const avg = data.totalConf / data.count;
-        const score = (data.count * 20) + avg;
-        if (score > bestScore) {
-          bestScore = score;
-          bestCid = c;
-          bestAvgConf = Math.round(avg * 10) / 10;
-        }
-      }
-    }
-
-    const voteCount = voteMap[bestCid]?.count || 1;
-    const signMeta = ALL_108_RTO_SIGNS.find((s) => s.class_id === bestCid) || ALL_108_RTO_SIGNS[bestCid];
-    const category = signMeta?.category || res.primary_prediction.category || 'MANDATORY';
-    const urgency = signMeta?.speed_limit ? 'WARNING' : (signMeta?.category === 'INFORMATORY' ? 'INFORMATIONAL' : (bestCid === 0 || bestCid === 2 ? 'CRITICAL' : 'WARNING'));
-    const isInfoSign = category === 'INFORMATORY' || urgency === 'INFORMATIONAL' || res.primary_prediction.alert_type === 'INFO';
-    const alertType = isInfoSign ? 'INFO' : 'ALERT';
-
-    // 3-STAGE INTELLIGENT RECOGNITION PIPELINE (HIGH-SPEED VEHICLE PERCEPTION):
-    // Stage 1: Optical Sensor Lock.
-    // Stage 2: 108 Indian RTO Verified.
-    // Stage 3: Statutory Alert Dispatched.
-    let stageStep = 3;
-    let stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
-    let stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
-    let isConfirmed = true;
-    let status = 'CONFIRMED_ACTIVE';
-
-    const detectedShape = res.primary_prediction.shape || signMeta?.shape || 'Standard';
-
-    // Immediate lock-break if a new distinct sign is perceived with confidence >= 25%
-    if (activeLockRef.current && rawCid !== activeLockRef.current.class_id && rawConf >= 25 && isDetected) {
-      activeLockRef.current = null;
-    }
-
-    // Check if prior confirmed detection lock is still active
-    if (activeLockRef.current && now < activeLockRef.current.lockedUntil && activeLockRef.current.class_id === bestCid) {
-      stageStep = 3;
-      stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
-      stageDescription = `Verified in official records: ${signMeta?.name || res.primary_prediction.sign_name}`;
-      isConfirmed = true;
-      status = 'CONFIRMED_ACTIVE';
-      bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (res.primary_prediction.is_confirmed || (bestAvgConf >= 25 && isDetected) || (rawConf >= 25 && isDetected)) {
-      // Instant Fast-Lock for fast-moving vehicles & approaching roadside signs
-      stageStep = 3;
-      stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
-      stageDescription = `Verified statutory match: ${signMeta?.name || res.primary_prediction.sign_name} (${signMeta?.sign_code || res.primary_prediction.sign_code || 'IRC:67'})`;
-      isConfirmed = true;
-      status = 'CONFIRMED_ACTIVE';
-
-      activeLockRef.current = {
-        class_id: bestCid,
-        sign_name: signMeta?.name || res.primary_prediction.sign_name,
-        confidence: bestAvgConf,
-        lockedUntil: now + 1200,
-      };
-    } else {
-      stageStep = 1;
-      stageTitle = 'STAGE 1: OPTICAL SCANNING';
-      stageDescription = `Optical sensor scanning road ahead...`;
-      isConfirmed = false;
-      status = 'ANALYZING_SIGN';
-    }
-
+    activeLockRef.current = null;
+    smoothedBoxRef.current = null;
+    temporalHistoryRef.current = [];
     return {
-      sign_name: signMeta?.name || res.primary_prediction.sign_name,
-      name_te: signMeta?.name_te || res.primary_prediction.name_te,
-      name_hi: signMeta?.name_hi || res.primary_prediction.name_hi,
-      class_id: signMeta?.sign_code || res.primary_prediction.sign_code || `#${String(bestCid).padStart(3, '0')}`,
-      raw_class_id: bestCid,
-      category: category,
-      shape: signMeta?.shape || 'Standard',
-      color_code: signMeta?.color_code || '#EF4444',
-      image_url: signMeta?.image_url || res.primary_prediction.image_url || `/signs/${String(bestCid).padStart(3, '0')}.png`,
-      confidence: bestAvgConf,
-      glyph_match: res.primary_prediction.glyph_match || 0,
-      margin_score: res.primary_prediction.margin_score || 0,
-      is_detected: isDetected,
-      is_confirmed: isConfirmed,
-      stage_step: stageStep,
-      stage_title: stageTitle,
-      stage_description: stageDescription,
-      alert_type: alertType,
-      alert_en: res.primary_prediction.alert_en || signMeta?.tts_prompt,
-      alert_te: res.primary_prediction.alert_te,
-      alert_hi: res.primary_prediction.alert_hi,
-      legal_reference: signMeta?.legal_reference || res.primary_prediction.legal_reference || 'IRC:67 Regulatory',
-      penalty_info: signMeta?.penalty_info || res.primary_prediction.penalty_info || `₹${res.primary_prediction.fine_amount || 500} fine under ${res.primary_prediction.mv_act_section || 'Sec 177 MV Act'}`,
-      meaning: signMeta?.meaning || res.primary_prediction.advice,
-      meaning_te: signMeta?.meaning_te || res.primary_prediction.meaning_te,
-      meaning_hi: signMeta?.meaning_hi || res.primary_prediction.meaning_hi,
-      halt: signMeta?.halt,
-      distance_est: isConfirmed ? '~14m' : stageStep === 2 ? 'Verifying...' : 'Acquiring...',
+      sign_name: 'Searching for Signs...',
+      class_id: 'IRC67-SCAN',
+      raw_class_id: -1,
+      category: 'SCANNING',
+      shape: 'Reticle',
+      color_code: '#22D3EE',
+      image_url: '/signs/000.png',
+      confidence: 0,
+      margin_score: 0,
+      is_detected: false,
+      is_confirmed: false,
+      legal_reference: 'Optical Road Telemetry Online',
+      penalty_info: 'Ready for road signs, phone screen, or printed charts',
+      meaning: 'Align sign inside reticle at 30-60 cm (1-2 ft) distance.',
+      distance_est: 'Scanning...',
       inference_ms: Math.round((res.inference_time_ms || 18.0) * 10) / 10,
-      bounding_box: smoothedBoxRef.current || rawBox,
+      bounding_box: [160, 100, 320, 260],
       frame_dimensions: res.frame_dimensions || [640, 480],
-      top5: res.top5_predictions || [],
-      status: status,
+      top5: [],
+      status: 'STANDBY',
     };
   };
 
@@ -419,7 +279,7 @@ export const AIStudioView: React.FC = () => {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720 },
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } },
       });
       webcamActiveRef.current = true;
       setWebcamActive(true);
@@ -469,7 +329,7 @@ export const AIStudioView: React.FC = () => {
       return;
     }
     if (!voiceAlertsEnabled && !force) return;
-    if ((signMeta.confidence || 0) < 25 && !force) return;
+    if ((signMeta.confidence || 0) < 22 && !force) return;
 
     // 2. Strict Anti-Overlap: Never start a new alert while previous speech is actively playing
     if (!force && speechService.isCurrentlySpeaking()) {
@@ -478,17 +338,10 @@ export const AIStudioView: React.FC = () => {
 
     const now = Date.now();
     const isSameSign = signMeta.raw_class_id === lastSpokenWebcamSignRef.current.signId;
-    const timeSinceLastSpokenAny = now - globalLastSpokenTimestampRef.current;
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
-    // 3. Crisp Real-Time ADAS Cadence:
-    // If a NEW sign appears (!isSameSign) and previous speech finished, announce with 800ms natural breathing pause
-    if (!force && !isSameSign && timeSinceLastSpokenAny < 800) {
-      return;
-    }
-
-    // Same-Sign Cooldown: Do not repeat identical sign within 10 seconds unless forced
-    if (!force && isSameSign && timeSinceThisSign < 10000) {
+    // Same-Sign Cooldown: Do not repeat identical sign within 6 seconds unless forced
+    if (!force && isSameSign && timeSinceThisSign < 6000) {
       return;
     }
 
@@ -503,13 +356,6 @@ export const AIStudioView: React.FC = () => {
       const promptTe = signMeta.alert_te || buildTrafficSignVoicePrompt(signMeta, 'te');
       const promptHi = signMeta.alert_hi || buildTrafficSignVoicePrompt(signMeta, 'hi');
 
-      speechService.speakSequentialMultilingual(
-        { en: promptEn, te: promptTe, hi: promptHi },
-        urgency,
-        (lang) => setActiveSpeakingLang(lang),
-        'CAMERA'
-      );
-
       globalLastSpokenTimestampRef.current = now;
       lastSpokenWebcamSignRef.current = { signId: signMeta.raw_class_id, timestamp: now };
       setLastVoiceSpoken({
@@ -518,6 +364,14 @@ export const AIStudioView: React.FC = () => {
         timestamp: now,
         lang: 'all',
       });
+
+      speechService.speakSequentialMultilingual(
+        { en: promptEn, te: promptTe, hi: promptHi },
+        urgency,
+        (lang) => setActiveSpeakingLang(lang),
+        'CAMERA',
+        force
+      );
       return;
     }
 
@@ -532,9 +386,6 @@ export const AIStudioView: React.FC = () => {
       promptText = buildTrafficSignVoicePrompt(signMeta, webcamLang);
     }
 
-    setActiveSpeakingLang(webcamLang);
-    speechService.speak(promptText, urgency, webcamLang, 'CAMERA');
-
     globalLastSpokenTimestampRef.current = now;
     lastSpokenWebcamSignRef.current = { signId: signMeta.raw_class_id, timestamp: now };
     setLastVoiceSpoken({
@@ -543,6 +394,9 @@ export const AIStudioView: React.FC = () => {
       timestamp: now,
       lang: webcamLang,
     });
+
+    setActiveSpeakingLang(webcamLang);
+    speechService.speak(promptText, urgency, webcamLang, 'CAMERA');
   };
 
   // Resilient non-blocking webcam inference loop for real-time PyTorch model
@@ -570,8 +424,8 @@ export const AIStudioView: React.FC = () => {
 
     isInferencePendingRef.current = true;
     try {
-      const targetW = 480;
-      const targetH = 360;
+      const targetW = 640;
+      const targetH = 480;
       if (canvas.width !== targetW) canvas.width = targetW;
       if (canvas.height !== targetH) canvas.height = targetH;
       const ctx = canvas.getContext('2d');
@@ -582,7 +436,7 @@ export const AIStudioView: React.FC = () => {
 
       ctx.drawImage(video, 0, 0, targetW, targetH);
       const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/jpeg', 0.70)
+        canvas.toBlob(resolve, 'image/jpeg', 0.75)
       );
 
       if (blob && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
@@ -592,7 +446,7 @@ export const AIStudioView: React.FC = () => {
         const parsed = parsePredictionResult(res);
         if (parsed && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
           setLivePrediction(parsed);
-          if (parsed.is_detected && parsed.is_confirmed && parsed.raw_class_id >= 0 && parsed.confidence >= 25) {
+          if (parsed.is_detected && parsed.is_confirmed && parsed.raw_class_id >= 0 && parsed.confidence >= 22) {
             speakWebcamDetection(parsed);
           }
         }
@@ -601,7 +455,7 @@ export const AIStudioView: React.FC = () => {
       // Transient frame drop or network hiccup, keep loop alive
     } finally {
       isInferencePendingRef.current = false;
-      scheduleNextTick(15);
+      scheduleNextTick(20);
     }
   };
 

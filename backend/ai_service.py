@@ -730,7 +730,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if not valid_crops or best_winner is None or best_quality < 0.25:
+        if not valid_crops or best_winner is None or best_quality < 0.20:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {
@@ -782,9 +782,9 @@ class AIServiceManager:
         urgency = rec.get("urgency", "WARNING")
 
         # High-Speed Automotive ADAS Decision:
-        # Immediate statutory target lock and voice confirmation (>= 28% conf) for fast vehicle speeds
+        # Immediate statutory target lock and voice confirmation (>= 22% conf) for fast vehicle speeds
         margin = round(conf - (best_top5[1]["composite_score"] if len(best_top5) > 1 else 0.0), 3)
-        if conf < 0.28 and neural_prob < 0.28:
+        if conf < 0.22 and neural_prob < 0.22:
             analysis_stage = "ANALYZING"
             stage_step = 1
             stage_title = "STAGE 1: ANALYZING SIGN VISUALS"

@@ -112,11 +112,12 @@ class SpeechService {
 
   public isCurrentlySpeaking(): boolean {
     const isAudioActive = Boolean(this.currentAudio && !this.currentAudio.paused && !this.currentAudio.ended);
-    if (isAudioActive) return true;
+    const now = Date.now();
 
-    if (this.isSpeaking) {
-      // Auto-unlocking watchdog: prevents Chromium/WebKit speech synthesis deadlock
-      if (Date.now() - this.speakingStartedAt > 5000) {
+    if (isAudioActive || this.isSpeaking) {
+      // Auto-unlocking watchdog: prevents speech lock if an utterance or audio stalls
+      // Multilingual 3-language sequence takes up to 12s; if exceeded 14s, auto-reset!
+      if (this.speakingStartedAt > 0 && now - this.speakingStartedAt > 14000) {
         console.warn('[SpeechService] Watchdog timer expired: auto-resetting speech lock');
         this.forceResetSpeech();
         return false;
@@ -130,6 +131,7 @@ class SpeechService {
     this.currentSessionId++;
     this.queue = [];
     this.isSpeaking = false;
+    this.speakingStartedAt = 0;
     this.currentUtterance = null;
     if (this.processingTimeout) {
       clearTimeout(this.processingTimeout);
@@ -139,6 +141,7 @@ class SpeechService {
       try {
         (this.currentAudio as any).__isAborted = true;
         this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
         this.currentAudio.src = '';
       } catch (_) {}
       this.currentAudio = null;
@@ -146,8 +149,16 @@ class SpeechService {
     if (this.synth) {
       try {
         this.synth.cancel();
+        if (this.synth.paused) {
+          this.synth.resume();
+        }
       } catch (_) {}
     }
+  }
+
+  public clearLastSpoken() {
+    this.lastSpokenText = '';
+    this.lastSpokenTimestamp = 0;
   }
 
   public getSettings(): SpeechSettings {
@@ -197,19 +208,13 @@ class SpeechService {
         } catch (_) {}
       }
 
-      // 2. Resume and prime SpeechSynthesis
+      // 2. Clean resume of SpeechSynthesis (WITHOUT deadlocking Chromium with empty/space utterance!)
       if (this.synth) {
-        if (this.synth.paused) {
-          try {
-            this.synth.resume();
-          } catch (_) {}
-        }
         try {
-          const silentUtterance = new SpeechSynthesisUtterance(' ');
-          silentUtterance.volume = 0.01;
-          silentUtterance.rate = 1.0;
-          (window as any).__aerovisionPrimeUtterance = silentUtterance;
-          this.synth.speak(silentUtterance);
+          this.synth.cancel();
+          if (this.synth.paused) {
+            this.synth.resume();
+          }
         } catch (_) {}
       }
 
@@ -553,9 +558,7 @@ class SpeechService {
     }
 
     if (!this.synth) {
-      this.notifyVisual(`[AUDIO UNAVAILABLE] ${event.text}`, true);
-      this.isSpeaking = false;
-      this.processingTimeout = setTimeout(() => this.processNextInQueue(), 650);
+      this.playStreamingAudio(event, lang);
       return;
     }
 
@@ -586,14 +589,13 @@ class SpeechService {
 
       utterance.onerror = (e) => {
         if (this.currentSessionId !== sessionId) return;
-        console.warn('[SpeechService] Synthesis error:', e.error);
+        console.warn('[SpeechService] Synthesis error, falling back to streaming audio:', e.error);
         this.isSpeaking = false;
         this.currentUtterance = null;
         if (this.synth) {
           try { this.synth.cancel(); } catch (_) {}
         }
-        this.notifyVisual(`[SPEECH PLAYBACK ERROR: ${e.error}] ${event.text}`, true);
-        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 200);
+        this.playStreamingAudio(event, lang);
       };
 
       this.currentUtterance = utterance;
@@ -723,7 +725,8 @@ class SpeechService {
     prompts: { en: string; te?: string; hi?: string },
     urgency: 'CRITICAL' | 'WARNING' | 'INFORMATIONAL' = 'WARNING',
     onLangChange?: (lang: AlertLanguage | null) => void,
-    source: AlertSource = 'CAMERA'
+    source: AlertSource = 'CAMERA',
+    force: boolean = false
   ): Promise<void> {
     if (!this.settings.enabled) return;
     if (this.exclusiveSource && source !== this.exclusiveSource && source !== 'MANUAL' && urgency !== 'CRITICAL') {
@@ -731,7 +734,7 @@ class SpeechService {
     }
 
     // Anti-overlap: If an alert is actively speaking, politely ignore new stream triggers unless MANUAL/CRITICAL
-    if (source !== 'MANUAL' && urgency !== 'CRITICAL' && this.isCurrentlySpeaking()) {
+    if (!force && source !== 'MANUAL' && urgency !== 'CRITICAL' && this.isCurrentlySpeaking()) {
       return;
     }
 
@@ -741,9 +744,9 @@ class SpeechService {
 
     if (!enText) return;
 
-    // Cadence check: if this alert was just spoken within 6 seconds, do not repeat
+    // Cadence check: if this alert was just spoken within 6 seconds, do not repeat unless forced
     const now = Date.now();
-    if (enText === this.lastSpokenText && now - this.lastSpokenTimestamp < 6000) {
+    if (!force && enText === this.lastSpokenText && now - this.lastSpokenTimestamp < 6000) {
       return;
     }
 
@@ -759,6 +762,7 @@ class SpeechService {
     if (this.currentSessionId !== sessionId) return;
 
     // 1. English
+    this.speakingStartedAt = Date.now();
     onLangChange?.('en');
     this.notifyVisual(enText, false);
     await this.playPhrasePromise(enText, 'en', urgency, sessionId);
@@ -767,8 +771,8 @@ class SpeechService {
       return;
     }
 
-    // 350ms pause
-    await new Promise((r) => setTimeout(r, 350));
+    // 250ms cadence pause
+    await new Promise((r) => setTimeout(r, 250));
     if (this.currentSessionId !== sessionId) {
       onLangChange?.(null);
       return;
@@ -776,6 +780,7 @@ class SpeechService {
 
     // 2. Telugu
     if (teText) {
+      this.speakingStartedAt = Date.now();
       onLangChange?.('te');
       this.notifyVisual(teText, false);
       await this.playPhrasePromise(teText, 'te', urgency, sessionId);
@@ -783,8 +788,8 @@ class SpeechService {
         onLangChange?.(null);
         return;
       }
-      // 350ms pause
-      await new Promise((r) => setTimeout(r, 350));
+      // 250ms cadence pause
+      await new Promise((r) => setTimeout(r, 250));
       if (this.currentSessionId !== sessionId) {
         onLangChange?.(null);
         return;
@@ -793,6 +798,7 @@ class SpeechService {
 
     // 3. Hindi
     if (hiText) {
+      this.speakingStartedAt = Date.now();
       onLangChange?.('hi');
       this.notifyVisual(hiText, false);
       await this.playPhrasePromise(hiText, 'hi', urgency, sessionId);
@@ -803,6 +809,7 @@ class SpeechService {
     }
 
     this.isSpeaking = false;
+    this.speakingStartedAt = 0;
     if (this.synth) {
       try { this.synth.cancel(); } catch (_) {}
     }
@@ -871,7 +878,19 @@ class SpeechService {
       } else {
         // Native SpeechSynthesisUtterance
         if (!this.synth) {
-          safeResolve();
+          // Fall back to backend audio stream if synth is not supported
+          try {
+            const audioUrl = `${getApiBase()}/ai/tts?text=${encodeURIComponent(text)}&lang=${lang}`;
+            const audio = new Audio(audioUrl);
+            audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
+            this.currentAudio = audio;
+            audio.onended = safeResolve;
+            audio.onerror = safeResolve;
+            const p = audio.play();
+            if (p) p.catch(safeResolve);
+          } catch {
+            safeResolve();
+          }
           return;
         }
         try {
@@ -887,8 +906,21 @@ class SpeechService {
           utterance.onend = () => {
             safeResolve();
           };
-          utterance.onerror = () => {
-            safeResolve();
+          utterance.onerror = (e) => {
+            console.warn('[SpeechService] Synthesis error on utterance, falling back:', e);
+            // Fall back to backend TTS stream on synthesis error
+            try {
+              const audioUrl = `${getApiBase()}/ai/tts?text=${encodeURIComponent(text)}&lang=${lang}`;
+              const audio = new Audio(audioUrl);
+              audio.volume = Math.max(0.1, Math.min(1.0, this.settings.volume));
+              this.currentAudio = audio;
+              audio.onended = safeResolve;
+              audio.onerror = safeResolve;
+              const p = audio.play();
+              if (p) p.catch(safeResolve);
+            } catch {
+              safeResolve();
+            }
           };
           this.currentUtterance = utterance;
           (window as any).__aerovisionActiveUtterance = utterance;
@@ -924,23 +956,41 @@ class SpeechService {
 
       let phoneticText = PHONETIC_MAP[text];
       if (!phoneticText) {
-        if (lang === 'te') {
-          phoneticText = text
-            .replace(/హెచ్చరిక/g, 'Hechcharika')
-            .replace(/సంకేతం/g, 'sanketham')
-            .replace(/గుర్తించబడింది/g, 'gurthinchabadindi')
-            .replace(/నిబంధనలను పాటించండి/g, 'nibandhanalanu paatinchandi')
-            .replace(/వేగ పరిమితి/g, 'vega parimithi')
-            .replace(/జాగ్రత్తగా నడపండి/g, 'jaagraththaga nadapandi');
-        } else if (lang === 'hi') {
-          phoneticText = text
-            .replace(/चेतावनी/g, 'Chetaavani')
-            .replace(/पहचाना गया/g, 'pehchaana gaya')
-            .replace(/नियमों का पालन करें/g, 'niyamon ka paalan karein')
-            .replace(/गति सीमा/g, 'gati seema')
-            .replace(/सावधानी से चलाएं/g, 'saavdhani se chalaayein');
-        } else {
-          phoneticText = text;
+        // High-fidelity transliteration for Indian regional prompts to Roman phonetic script
+        phoneticText = text
+          .replace(/హెచ్చరిక[:\s]*/g, 'Hechcharika! ')
+          .replace(/సమాచారం[:\s]*/g, 'Samaachaaram! ')
+          .replace(/నియంత్రణ[:\s]*/g, 'Niyanthrana! ')
+          .replace(/ఆగు సంకేతం/g, 'Stop sign')
+          .replace(/దారి ఇవ్వండి/g, 'Daari ivvandi, yield')
+          .replace(/కుడి వైపు మలుపు/g, 'kudi vaipu malupu, right curve')
+          .replace(/ఎడమ వైపు మలుపు/g, 'edama vaipu malupu, left curve')
+          .replace(/వేగాన్ని తగ్గించండి/g, 'vegaanni thagginchandi, reduce speed')
+          .replace(/వేగం తగ్గించండి/g, 'vegam thagginchandi, slow down')
+          .replace(/వాహనాన్ని పూర్తిగా నిలపండి/g, 'vaahanaanni poorthigaa nilapandi')
+          .replace(/గుర్తించబడింది/g, 'gurthinchabadindi')
+          .replace(/నిబంధనలను పాటించండి/g, 'nibandhanalanu paatinchandi')
+          .replace(/పాఠశాల ప్రాంతం/g, 'paatashaala praantham, school ahead')
+          .replace(/పాదచారుల క్రాసింగ్/g, 'paadachaarula crossing, pedestrian crossing')
+          .replace(/ప్రవేశం నిషేధించబడింది/g, 'pravesham nishedhinchabadindi, no entry')
+          .replace(/చేतावनी[:\s]*/g, 'Chetaavani! ')
+          .replace(/सावधानी[:\s]*/g, 'Saavdhani! ')
+          .replace(/सूचना[:\s]*/g, 'Soochna! ')
+          .replace(/स्टॉप साइन/g, 'Stop sign')
+          .replace(/रास्ता दें/g, 'Raasta dein, give way')
+          .replace(/दाहिना मोड़/g, 'daahina mod, right turn')
+          .replace(/बायां मोड़/g, 'baayan mod, left turn')
+          .replace(/गति धीमी करें/g, 'gati dheemi karein, slow down')
+          .replace(/वाहन को पूरी तरह रोकें/g, 'vaahan ko poori tarah rokein')
+          .replace(/पहचाना गया/g, 'pehchaana gaya')
+          .replace(/नियमों का पालन करें/g, 'niyamon ka paalan karein')
+          .replace(/स्कूल आगे है/g, 'school aage hai')
+          .replace(/पैदल पार पथ/g, 'paidal paar path, pedestrian crossing');
+
+        // If non-ASCII characters remain, clean them so English synthesizer speaks cleanly
+        phoneticText = phoneticText.replace(/[^\x00-\x7F]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!phoneticText || phoneticText.length < 3) {
+          phoneticText = lang === 'te' ? 'Hechcharika! Traffic sign ahead.' : 'Chetaavani! Traffic sign ahead.';
         }
       }
       try {
@@ -951,7 +1001,7 @@ class SpeechService {
         }
         const u = new SpeechSynthesisUtterance(phoneticText);
         u.volume = this.settings.volume;
-        u.rate = 0.9;
+        u.rate = 0.95;
         u.lang = 'en-IN';
         u.onend = safeResolve;
         u.onerror = safeResolve;
