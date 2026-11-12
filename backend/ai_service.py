@@ -174,45 +174,45 @@ class AIServiceManager:
         is_inverted_triangle = False
         is_octagon = False
         is_circle = False
+        curve_direction = "NONE"
 
         # Find largest colored contour (red, blue, or yellow)
-        combined_mask = mask_red if red_ratio > 0.08 else (mask_blue if blue_ratio > 0.18 else (mask_yellow if yellow_ratio > 0.15 else None))
+        combined_mask = mask_red if red_ratio > 0.05 else (mask_blue if blue_ratio > 0.10 else (mask_yellow if yellow_ratio > 0.08 else None))
         cnts = []
         if combined_mask is not None:
             cnts, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if cnts:
             largest = max(cnts, key=cv2.contourArea)
             area = cv2.contourArea(largest)
-            if area > (w * h * 0.04):
+            if area > (w * h * 0.03):
                 peri = cv2.arcLength(largest, True)
                 approx = cv2.approxPolyDP(largest, 0.045 * peri, True)
                 num_v = len(approx)
                 bx, by, bw, bh = cv2.boundingRect(largest)
 
                 circularity = (4 * np.pi * area / (peri * peri)) if peri > 0 else 0.0
-                pts = approx.reshape(-1, 2)
-                sorted_y = sorted(pts, key=lambda p: p[1])
 
-                top_dy = abs(sorted_y[1][1] - sorted_y[0][1])
-                bot_dy = abs(sorted_y[-1][1] - sorted_y[-2][1])
+                # Top-third vs bottom-third mass distribution for rotation-invariant triangle orientation
+                top_part = combined_mask[by:by + int(bh * 0.35), bx:bx + bw]
+                bot_part = combined_mask[by + int(bh * 0.65):by + bh, bx:bx + bw]
+                p_top = float(np.sum(top_part > 0))
+                p_bot = float(np.sum(bot_part > 0))
+                vert_ratio = (p_bot + 1.0) / (p_top + 1.0)
 
-                # Upright Triangle: single top apex, flat horizontal bottom
-                if num_v in (3, 4, 5) and top_dy > (bh * 0.22) and bot_dy < (bh * 0.25):
+                # Upright Triangle (Cautionary Signs 46-86): Base is wider at bottom (p_bot >> p_top)
+                if vert_ratio >= 1.20 and num_v in (3, 4, 5, 6):
                     is_upright_triangle = True
                     shape_type = "UPRIGHT_TRIANGLE"
-                # Inverted Triangle (Give Way): flat horizontal top, single bottom apex
-                elif num_v in (3, 4, 5) and top_dy < (bh * 0.20) and bot_dy > (bh * 0.25):
+                # Inverted Triangle (Give Way, Class 1): Base is wider at top (p_top >> p_bot)
+                elif vert_ratio <= 0.80 and num_v in (3, 4, 5, 6):
                     is_inverted_triangle = True
                     shape_type = "INVERTED_TRIANGLE"
-                # Octagon (Stop sign): 7-9 vertices, or 6+ vertices with solid red and high circularity
-                elif (num_v in (7, 8, 9) and red_ratio > 0.25) or (num_v >= 6 and circularity > 0.70 and red_ratio > 0.40):
+                # Octagon (Stop sign): 7-9 vertices, or red with circularity > 0.70
+                elif (num_v in (7, 8, 9) and red_ratio > 0.20) or (circularity > 0.72 and red_ratio > 0.35):
                     is_octagon = True
                     shape_type = "OCTAGON"
-                # Rectangle: 4 vertices, flat top and flat bottom with sign chromatic presence
-                elif num_v == 4 and top_dy < (bh * 0.22) and bot_dy < (bh * 0.22) and (blue_ratio > 0.12 or red_ratio > 0.10 or yellow_ratio > 0.10):
-                    shape_type = "RECTANGLE"
                 # Circular: high circularity
-                elif circularity > 0.65 or (num_v >= 6 and circularity > 0.60):
+                elif circularity > 0.65 or (num_v >= 6 and circularity > 0.58):
                     is_circle = True
                     shape_type = "CIRCLE"
 
@@ -226,11 +226,11 @@ class AIServiceManager:
 
         # Central glyph crop (adjusted for triangle vs circle)
         if is_upright_triangle:
-            c_crop = sign_patch[int(sph * 0.35):int(sph * 0.85), int(spw * 0.20):int(spw * 0.80)]
+            c_crop = sign_patch[int(sph * 0.30):int(sph * 0.85), int(spw * 0.20):int(spw * 0.80)]
         elif is_inverted_triangle:
             c_crop = sign_patch[int(sph * 0.15):int(sph * 0.65), int(spw * 0.20):int(spw * 0.80)]
         else:
-            c_crop = sign_patch[int(sph * 0.22):int(sph * 0.78), int(spw * 0.22):int(spw * 0.78)]
+            c_crop = sign_patch[int(sph * 0.20):int(sph * 0.80), int(spw * 0.20):int(spw * 0.80)]
 
         glyph_mask = np.zeros((64, 64), dtype=np.uint8)
         glyph_pixel_count = 0
@@ -245,9 +245,22 @@ class AIServiceManager:
             if cnts_sym:
                 valid_sym = [sc for sc in cnts_sym if cv2.contourArea(sc) > max(15.0, c_crop.shape[0] * c_crop.shape[1] * 0.008)]
                 if valid_sym:
-                    all_s = np.vstack(valid_sym)
-                    tsx, tsy, tsw, tsh = cv2.boundingRect(all_s)
+                    best_sym = max(valid_sym, key=cv2.contourArea)
+                    tsx, tsy, tsw, tsh = cv2.boundingRect(best_sym)
                     tsym = c_th[tsy:tsy+tsh, tsx:tsx+tsw]
+
+                    # Direction of arrow in Cautionary signs (stem at bottom vs curve at top)
+                    ah, aw = tsym.shape
+                    if ah >= 10 and aw >= 10:
+                        left_bot = float(np.sum(tsym[ah//2:, :aw//2] > 0))
+                        right_bot = float(np.sum(tsym[ah//2:, aw//2:] > 0))
+                        top_left = float(np.sum(tsym[:ah//2, :aw//2] > 0))
+                        top_right = float(np.sum(tsym[:ah//2, aw//2:] > 0))
+                        if left_bot > right_bot and top_right > 0:
+                            curve_direction = "RIGHT"
+                        elif right_bot > left_bot and top_left > 0:
+                            curve_direction = "LEFT"
+
                     scale = min(48.0 / max(1, tsw), 48.0 / max(1, tsh))
                     nw, nh = max(4, int(tsw * scale)), max(4, int(tsh * scale))
                     sym_res = cv2.resize(tsym, (nw, nh), interpolation=cv2.INTER_NEAREST)
@@ -264,6 +277,7 @@ class AIServiceManager:
             "is_inverted_triangle": is_inverted_triangle,
             "is_octagon": is_octagon,
             "is_circle": is_circle,
+            "curve_direction": curve_direction,
             "glyph_mask": glyph_mask,
             "glyph_pixel_count": glyph_pixel_count,
         }
@@ -282,45 +296,95 @@ class AIServiceManager:
         Extracts top-5 candidates, applies chromatic guidance, and returns authoritative predictions instantly.
         Eliminates slow nested CPU template matching loops (60x speedup for highway & fast vehicle speeds).
         """
-        top_k = min(5, len(neural_probs))
+        is_upright = analysis.get("is_upright_triangle", False)
+        is_inverted = analysis.get("is_inverted_triangle", False)
+        is_octagon = analysis.get("is_octagon", False)
+        curve_dir = analysis.get("curve_direction", "NONE")
+        glyph_cnt = analysis.get("glyph_pixel_count", 0)
+
+        top_k = min(8, len(neural_probs))
         top_vals, top_ids = torch.topk(neural_probs, top_k)
+        candidate_cids = [t.item() for t in top_ids]
+
+        # Ensure statutory classes matching the physical geometry are admitted:
+        if is_upright:
+            if curve_dir == "RIGHT":
+                if 46 not in candidate_cids: candidate_cids.append(46)
+                if 48 not in candidate_cids: candidate_cids.append(48)
+            elif curve_dir == "LEFT":
+                if 47 not in candidate_cids: candidate_cids.append(47)
+                if 49 not in candidate_cids: candidate_cids.append(49)
+            else:
+                for c in (46, 47, 50, 51, 60, 62):
+                    if c not in candidate_cids: candidate_cids.append(c)
+        elif is_inverted:
+            if 1 not in candidate_cids: candidate_cids.append(1)
+        elif is_octagon:
+            if 0 not in candidate_cids: candidate_cids.append(0)
 
         red_ratio = analysis.get("red_ratio", 0.0)
         blue_ratio = analysis.get("blue_ratio", 0.0)
         yellow_ratio = analysis.get("yellow_ratio", 0.0)
 
         scored = []
-        for val, cid_t in zip(top_vals, top_ids):
-            cid = cid_t.item()
-            prob = float(val.item())
+        for cid in candidate_cids:
+            prob = float(neural_probs[cid].item())
             rec = self.records_108.get(str(cid), {})
             name = rec.get("name", f"Class {cid}")
             cat = rec.get("category", "MANDATORY")
 
+            # STATUTORY DISQUALIFICATION RULES:
+            # 1. An upright triangle CANNOT be Give Way (Class 1 is strictly inverted triangle)
+            if is_upright and cid == 1:
+                continue
+            # 2. An inverted triangle CANNOT be a Cautionary sign
+            if is_inverted and (cat == "CAUTIONARY" or cid in range(46, 87)):
+                continue
+
             # Validate chromatic corroboration against Indian RTO statutory specifications
             is_corroborated = False
-            if (cat == "MANDATORY" or cid == 0) and red_ratio > 0.07:
+            if (cat == "MANDATORY" or cid == 0) and red_ratio > 0.05:
                 is_corroborated = True
-            elif cat == "INFORMATORY" and blue_ratio > 0.09:
+            elif cat == "INFORMATORY" and blue_ratio > 0.08:
                 is_corroborated = True
-            elif cat == "CAUTIONARY" and (yellow_ratio > 0.07 or red_ratio > 0.07):
+            elif cat == "CAUTIONARY" and (yellow_ratio > 0.06 or red_ratio > 0.05):
                 is_corroborated = True
-            elif cat == "MANDATORY" and cid in range(23, 33) and blue_ratio > 0.09:
+            elif cat == "MANDATORY" and cid in range(23, 33) and blue_ratio > 0.08:
+                is_corroborated = True
+
+            score = prob
+            # Physical geometry & glyph directional prioritization
+            if is_upright and cat == "CAUTIONARY":
+                if curve_dir == "RIGHT" and cid == 46:
+                    score = max(score * 1.8, 0.88)
+                    is_corroborated = True
+                elif curve_dir == "RIGHT" and cid == 48:
+                    score = max(score * 1.4, 0.72)
+                    is_corroborated = True
+                elif curve_dir == "LEFT" and cid == 47:
+                    score = max(score * 1.8, 0.88)
+                    is_corroborated = True
+                elif curve_dir == "LEFT" and cid == 49:
+                    score = max(score * 1.4, 0.72)
+                    is_corroborated = True
+                else:
+                    score = score * 1.15
+            elif is_inverted and cid == 1:
+                score = max(score * 1.6, 0.85)
+                is_corroborated = True
+            elif is_octagon and cid == 0:
+                score = max(score * 1.6, 0.90)
                 is_corroborated = True
 
             # If no sign chromatic presence is detected in this crop (e.g. wall, face, curtain, room furniture):
             # Heavily suppress false positive predictions
             if not is_corroborated:
                 if red_ratio < 0.03 and blue_ratio < 0.03 and yellow_ratio < 0.03:
-                    # Pure flat background / room interior / person
-                    if prob < 0.68:
-                        score = prob * 0.35
-                    else:
-                        score = prob
+                    score = prob * 0.35 if prob < 0.68 else prob
                 else:
                     score = prob * 0.80
             else:
-                score = min(0.995, prob * 1.08)
+                score = min(0.995, score * 1.08)
 
             scored.append({
                 "class_id": cid,
@@ -343,9 +407,9 @@ class AIServiceManager:
             is_corr = top_cand.get("is_corroborated", False)
             
             # Acceptance Gate:
-            # - Corroborated with sign chromatic presence: composite >= 0.36
+            # - Corroborated with genuine sign chromatic presence: composite >= 0.25 (fast real-time perception)
             # - Uncorroborated (room background/face): neural probability must exceed 0.70 with clear margin
-            if (is_corr and comp_score >= 0.36) or (top_prob >= 0.70 and top2_margin >= 0.25):
+            if (is_corr and comp_score >= 0.25) or (top_prob >= 0.70 and top2_margin >= 0.25):
                 winner = top_cand
         return winner, scored
 
@@ -431,29 +495,36 @@ class AIServiceManager:
         cx, cy = w // 2, h // 2
         min_dim = min(h, w)
 
-        # 1. Chromatic Saliency ROI: Fast unified HSV mask for all RTO color signatures (Red, Blue, Yellow)
+        # 1. Chromatic Saliency ROI: Check Red, Blue, then Yellow contours
         try:
             hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
             m_r1 = cv2.inRange(hsv, np.array([0, 42, 35]), np.array([12, 255, 255]))
             m_r2 = cv2.inRange(hsv, np.array([150, 42, 35]), np.array([180, 255, 255]))
+            mask_red = cv2.bitwise_or(m_r1, m_r2)
             m_b = cv2.inRange(hsv, np.array([92, 42, 35]), np.array([135, 255, 255]))
             m_y = cv2.inRange(hsv, np.array([15, 38, 40]), np.array([36, 255, 255]))
             
-            combined = cv2.bitwise_or(cv2.bitwise_or(m_r1, m_r2), cv2.bitwise_or(m_b, m_y))
-            cnts, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if cnts:
-                valid_cnts = [c for c in cnts if cv2.contourArea(c) >= (w * h * 0.003)]
-                if valid_cnts:
-                    best_c = max(valid_cnts, key=cv2.contourArea)
-                    bx, by, bw, bh = cv2.boundingRect(best_c)
-                    aspect = float(bw) / max(1, bh)
-                    if 0.45 <= aspect <= 2.20:
-                        cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
-                        side = max(32, int(max(bw, bh) * 1.45))
-                        crop = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side)
-                        if self.has_sign_chroma(crop):
-                            candidates.append((bx, by, bw, bh, crop, "Chromatic Saliency"))
+            for col_mask, col_name in [(mask_red, "Red"), (m_b, "Blue"), (m_y, "Yellow")]:
+                cnts, _ = cv2.findContours(col_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if cnts:
+                    valid_cnts = [c for c in cnts if cv2.contourArea(c) >= (w * h * 0.003)]
+                    if valid_cnts:
+                        best_c = max(valid_cnts, key=cv2.contourArea)
+                        bx, by, bw, bh = cv2.boundingRect(best_c)
+                        aspect = float(bw) / max(1, bh)
+                        if 0.45 <= aspect <= 2.20:
+                            cnt_cx, cnt_cy = bx + bw // 2, by + bh // 2
+                            # Tight salient crop matching training receptive field
+                            side_tight = max(32, int(max(bw, bh) * 1.15))
+                            crop_tight = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side_tight)
+                            if self.has_sign_chroma(crop_tight):
+                                candidates.append((bx, by, bw, bh, crop_tight, f"{col_name} Saliency Tight"))
+                            # Wide salient crop
+                            side_wide = max(32, int(max(bw, bh) * 1.35))
+                            crop_wide = self.safe_square_crop(frame_bgr, cnt_cx, cnt_cy, side_wide)
+                            if self.has_sign_chroma(crop_wide):
+                                candidates.append((bx, by, bw, bh, crop_wide, f"{col_name} Saliency Wide"))
+                            break # Found primary colored sign
         except Exception:
             pass
 
@@ -659,7 +730,7 @@ class AIServiceManager:
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
-        if not valid_crops or best_winner is None or best_quality < 0.36:
+        if not valid_crops or best_winner is None or best_quality < 0.25:
             reticle_side = int(min(h, w) * 0.50)
             return {
                 "prediction": {

@@ -264,7 +264,7 @@ export const AIStudioView: React.FC = () => {
     let bestAvgConf = rawConf;
 
     // Direct priority for fresh incoming sign perception
-    if (rawConf >= 35) {
+    if (rawConf >= 25) {
       bestCid = rawCid;
       bestAvgConf = rawConf;
     } else {
@@ -299,6 +299,11 @@ export const AIStudioView: React.FC = () => {
 
     const detectedShape = res.primary_prediction.shape || signMeta?.shape || 'Standard';
 
+    // Immediate lock-break if a new distinct sign is perceived with confidence >= 25%
+    if (activeLockRef.current && rawCid !== activeLockRef.current.class_id && rawConf >= 25 && isDetected) {
+      activeLockRef.current = null;
+    }
+
     // Check if prior confirmed detection lock is still active
     if (activeLockRef.current && now < activeLockRef.current.lockedUntil && activeLockRef.current.class_id === bestCid) {
       stageStep = 3;
@@ -307,7 +312,7 @@ export const AIStudioView: React.FC = () => {
       isConfirmed = true;
       status = 'CONFIRMED_ACTIVE';
       bestAvgConf = Math.max(bestAvgConf, activeLockRef.current.confidence);
-    } else if (res.primary_prediction.is_confirmed || (bestAvgConf >= 38 && isDetected) || (rawConf >= 38 && isDetected)) {
+    } else if (res.primary_prediction.is_confirmed || (bestAvgConf >= 25 && isDetected) || (rawConf >= 25 && isDetected)) {
       // Instant Fast-Lock for fast-moving vehicles & approaching roadside signs
       stageStep = 3;
       stageTitle = 'STAGE 3: RECORD VERIFIED & ACTIVE';
@@ -319,7 +324,7 @@ export const AIStudioView: React.FC = () => {
         class_id: bestCid,
         sign_name: signMeta?.name || res.primary_prediction.sign_name,
         confidence: bestAvgConf,
-        lockedUntil: now + 2000,
+        lockedUntil: now + 1200,
       };
     } else {
       stageStep = 1;
@@ -464,7 +469,7 @@ export const AIStudioView: React.FC = () => {
       return;
     }
     if (!voiceAlertsEnabled && !force) return;
-    if ((signMeta.confidence || 0) < 38 && !force) return;
+    if ((signMeta.confidence || 0) < 25 && !force) return;
 
     // 2. Strict Anti-Overlap: Never start a new alert while previous speech is actively playing
     if (!force && speechService.isCurrentlySpeaking()) {
@@ -476,13 +481,13 @@ export const AIStudioView: React.FC = () => {
     const timeSinceLastSpokenAny = now - globalLastSpokenTimestampRef.current;
     const timeSinceThisSign = now - lastSpokenWebcamSignRef.current.timestamp;
 
-    // 3. Strict ADAS Cadence & Calm Rhythm:
-    // Global Refractory: Never voice alerts faster than 6.0 seconds apart (multilingual speech takes 4-5s)
-    if (!force && timeSinceLastSpokenAny < 6000) {
+    // 3. Crisp Real-Time ADAS Cadence:
+    // If a NEW sign appears (!isSameSign) and previous speech finished, announce with 800ms natural breathing pause
+    if (!force && !isSameSign && timeSinceLastSpokenAny < 800) {
       return;
     }
 
-    // Same-Sign Cooldown: Do not repeat identical sign within 10 seconds
+    // Same-Sign Cooldown: Do not repeat identical sign within 10 seconds unless forced
     if (!force && isSameSign && timeSinceThisSign < 10000) {
       return;
     }
@@ -587,7 +592,7 @@ export const AIStudioView: React.FC = () => {
         const parsed = parsePredictionResult(res);
         if (parsed && webcamActiveRef.current && !isSnapshotFrozenRef.current) {
           setLivePrediction(parsed);
-          if (parsed.is_detected && parsed.is_confirmed && parsed.raw_class_id >= 0 && parsed.confidence >= 38) {
+          if (parsed.is_detected && parsed.is_confirmed && parsed.raw_class_id >= 0 && parsed.confidence >= 25) {
             speakWebcamDetection(parsed);
           }
         }
@@ -596,7 +601,7 @@ export const AIStudioView: React.FC = () => {
       // Transient frame drop or network hiccup, keep loop alive
     } finally {
       isInferencePendingRef.current = false;
-      scheduleNextTick(20);
+      scheduleNextTick(15);
     }
   };
 

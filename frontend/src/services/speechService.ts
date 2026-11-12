@@ -67,6 +67,7 @@ class SpeechService {
   private currentAudio: HTMLAudioElement | null = null;
   private currentSessionId = 0;
   private isSpeaking = false;
+  private speakingStartedAt = 0;
   private queue: SpeechEvent[] = [];
   private currentUtterance: SpeechSynthesisUtterance | null = null;
   private visualListeners: Set<VisualFallbackCallback> = new Set();
@@ -110,10 +111,43 @@ class SpeechService {
   }
 
   public isCurrentlySpeaking(): boolean {
-    const isSynthSpeaking =
-      typeof window !== 'undefined' && 'speechSynthesis' in window && Boolean(window.speechSynthesis?.speaking);
     const isAudioActive = Boolean(this.currentAudio && !this.currentAudio.paused && !this.currentAudio.ended);
-    return this.isSpeaking || isSynthSpeaking || isAudioActive;
+    if (isAudioActive) return true;
+
+    if (this.isSpeaking) {
+      // Auto-unlocking watchdog: prevents Chromium/WebKit speech synthesis deadlock
+      if (Date.now() - this.speakingStartedAt > 5000) {
+        console.warn('[SpeechService] Watchdog timer expired: auto-resetting speech lock');
+        this.forceResetSpeech();
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  public forceResetSpeech() {
+    this.currentSessionId++;
+    this.queue = [];
+    this.isSpeaking = false;
+    this.currentUtterance = null;
+    if (this.processingTimeout) {
+      clearTimeout(this.processingTimeout);
+      this.processingTimeout = null;
+    }
+    if (this.currentAudio) {
+      try {
+        (this.currentAudio as any).__isAborted = true;
+        this.currentAudio.pause();
+        this.currentAudio.src = '';
+      } catch (_) {}
+      this.currentAudio = null;
+    }
+    if (this.synth) {
+      try {
+        this.synth.cancel();
+      } catch (_) {}
+    }
   }
 
   public getSettings(): SpeechSettings {
@@ -422,6 +456,7 @@ class SpeechService {
     if (!event) return;
 
     this.isSpeaking = true;
+    this.speakingStartedAt = Date.now();
     this.lastSpokenText = event.text;
     this.lastSpokenTimestamp = event.timestamp;
 
@@ -542,8 +577,11 @@ class SpeechService {
         if (this.currentSessionId !== sessionId) return;
         this.isSpeaking = false;
         this.currentUtterance = null;
-        // Calm rhythm: 450ms breathing pause before processing next queue item
-        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 450);
+        if (this.synth) {
+          try { this.synth.cancel(); } catch (_) {}
+        }
+        // Crisp pacing: 250ms breathing pause before processing next queue item
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 250);
       };
 
       utterance.onerror = (e) => {
@@ -551,8 +589,11 @@ class SpeechService {
         console.warn('[SpeechService] Synthesis error:', e.error);
         this.isSpeaking = false;
         this.currentUtterance = null;
+        if (this.synth) {
+          try { this.synth.cancel(); } catch (_) {}
+        }
         this.notifyVisual(`[SPEECH PLAYBACK ERROR: ${e.error}] ${event.text}`, true);
-        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 300);
+        this.processingTimeout = setTimeout(() => this.processNextInQueue(), 200);
       };
 
       this.currentUtterance = utterance;
@@ -709,6 +750,7 @@ class SpeechService {
     this.stop();
     const sessionId = ++this.currentSessionId;
     this.isSpeaking = true;
+    this.speakingStartedAt = now;
     this.lastSpokenText = enText;
     this.lastSpokenTimestamp = now;
 
@@ -761,6 +803,9 @@ class SpeechService {
     }
 
     this.isSpeaking = false;
+    if (this.synth) {
+      try { this.synth.cancel(); } catch (_) {}
+    }
     onLangChange?.(null);
   }
 
@@ -783,6 +828,9 @@ class SpeechService {
         clearTimeout(safetyTimer);
         this.currentAudio = null;
         this.currentUtterance = null;
+        if (this.synth) {
+          try { this.synth.cancel(); } catch (_) {}
+        }
         resolve();
       };
 
